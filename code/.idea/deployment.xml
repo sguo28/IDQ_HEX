@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" promptOnRemoteOverwrite="CHECK_TIMESTAMP" serverName="sguo@tnet (project level)" overwriteAll="false" deleteMissingItems="true" remoteFilesAllowedToDisappearOnAutoupload="false" compareModeInSync="TIMESTAMP" showNewOnSourceInSync="false" showNewOnTargetInSync="false" showExcludedInSync="true">
+    <serverData>
+      <paths name="sguo@tnet">
+        <serverdata>
+          <mappings>
+            <mapping deploy="code/" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="sguo@tnet (project level)">
+        <serverdata>
+          <mappings>
+            <mapping deploy="code/" local="$PROJECT_DIR$" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/code/logs/test" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+    </serverData>
+  </component>
+</project>

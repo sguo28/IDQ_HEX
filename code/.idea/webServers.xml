@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="2b78cbea-f056-403d-9936-b57122319c26" name="sguo@tnet (project level)">
+        <fileTransfer rootFolder="/home/sguo/workspace/IDQ_HEX/" accessType="SFTP" host="tnet.eng.ua.edu" port="22" sshConfigId="f561fe48-037d-435e-9a0c-46b77a44c738" sshConfig="sguo@tnet" />
+      </webServer>
+    </option>
+  </component>
+</project>

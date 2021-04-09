@@ -1,0 +1,105 @@
+import time
+import numpy as np
+from common.time_utils import get_local_datetime
+from config.hex_setting import HEX_SHP_PATH, CS_SHP_PATH, NUM_NEAREST_CS, TRIP_FILE, TRAVEL_TIME_FILE, \
+    TIMESTEP, START_OFFSET, SIM_DAYS, START_TIME, TRAINING_CYCLE, UPDATE_CYCLE, STORE_TRANSITION_CYCLE,CNN_RESUME
+from dqn_agent.dqn_agent_with_cnn.cnn_dqn_agent import DeepQNetworkAgent
+from simulator.simulator_cnn import Simulator
+
+# ---------------MAIN FILE---------------
+NO_CHARGE = True; GLOBAL_MATCHING = True
+if __name__ == '__main__':
+    if SIM_DAYS > 0:
+        start_time = START_TIME + int(60 * 60 * 24 * START_OFFSET)  # start_time = 0
+        print("Simulate Episode Start Datetime: {}".format(get_local_datetime(start_time)))
+        end_time = start_time + int(60 * 60 * 24 * SIM_DAYS)
+        print("Simulate Episode End Datetime : {}".format(get_local_datetime(end_time)))
+
+        simulator = Simulator(start_time, TIMESTEP, NO_CHARGE,GLOBAL_MATCHING)
+        simulator.init(HEX_SHP_PATH, CS_SHP_PATH, TRIP_FILE, TRAVEL_TIME_FILE, NUM_NEAREST_CS)
+        dqn_agent = DeepQNetworkAgent()
+        n_steps = int(3600 * 24 / TIMESTEP)  # 60 per minute
+        with open('logs/parsed_results_cnn.csv', 'w') as f, open('logs/target_charging_stations_cnn.csv', 'w') as g, \
+                open('logs/training_hist_cnn.csv', 'w') as h, open('logs/demand_supply_gap_cnn.csv', 'w') as l1, \
+                open('logs/cruising_od_cnn.csv', 'w') as m1, open('logs/matching_od_cnn.csv', 'w') as n1:
+                #  if not CNN_RESUME:
+
+            f.writelines(
+                '{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n'.format("time", "num_idle", "num_serving",
+                                                                        "num_charging",
+                                                                        "num_cruising", "num_assigned", "num_waitpile",
+                                                                        "num_tobedisptached", "num_offduty",
+                                                                        "num_matches", "pass_arrivals", "longwait_pass",
+                                                                        "served_pass", "removed_pass",
+                                                                        "average_mileage"))
+
+            g.writelines('{},{}\n'.format("tick", "cs_id"))
+            h.writelines('{},{},{},{},{},{}\n'.format("step", "loss", "reward", "learning_rate","sample_reward","sample_SOC"))
+            l1.writelines('{},{},{}\n'.format("step", "hex_zone_id", "demand_supply_gap"))
+            m1.writelines('{},{},{}\n'.format("step","origin_hex","destination_hex"))
+            n1.writelines('{},{},{}\n'.format("step", "origin_hex", "destination_hex"))
+
+            for day in range(SIM_DAYS):
+                print("############################ SUMMARY ################################")
+                for i in range(n_steps):
+                    tick = simulator.get_current_time()
+                    start_update_tick = time.time()
+
+                    # record metrics before attached actions/target hexs are updated.
+                    [num_idle, num_serving, num_charging, num_cruising, n_matches, total_num_arrivals,
+                     total_removed_passengers, num_assigned, num_waitpile, num_tobedisptached, num_offduty,
+                     average_reduced_SOC, total_num_longwait_pass, total_num_served_pass] = simulator.summarize_metrics(
+                        l1, m1, n1)
+
+                    f.writelines('{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(tick, num_idle, num_serving,
+                                                                                         num_charging, num_cruising,
+                                                                                         num_assigned, num_waitpile,
+                                                                                         num_tobedisptached,
+                                                                                         num_offduty, n_matches,
+                                                                                         total_num_arrivals,
+                                                                                         total_num_longwait_pass,
+                                                                                         total_num_served_pass,
+                                                                                         total_removed_passengers,
+                                                                                         average_reduced_SOC))
+                    # now implement per-tick updates.
+                    simulator.step()
+                    t1 = time.time() - start_update_tick
+                    local_state_batches, num_valid_relos = simulator.get_local_states()
+                    t2 = time.time() - start_update_tick
+                    global_state = simulator.get_global_state()
+                    t3 = time.time() - start_update_tick
+                    # if tick >0 and np.sum(global_state) == 0: # check if just reset
+                    #     global_state = global_state_slice
+                    if local_state_batches is not None:
+                        simulator.attach_actions_to_vehs(
+                            dqn_agent.get_actions(local_state_batches, num_valid_relos, global_state))
+                    t4 = time.time() - start_update_tick
+                    simulator.update()  # update time, get metrics.
+                    t5 = time.time() - start_update_tick
+
+                    # dump transitions to DQN module
+                    if tick % STORE_TRANSITION_CYCLE == 0:
+                        simulator.store_transitions_from_veh()
+                        states, actions, next_states, rewards, valid_action_nums_ = simulator.dump_transition_to_dqn()
+                        if states is not None:
+                            [dqn_agent.add_transition(state, action, next_state, reward, valid_action_num_) for
+                             state, action, next_state, reward, valid_action_num_ in zip(states, actions, next_states, rewards,valid_action_nums_)]
+                            print('For tick {}, average reward is {}'.format(tick/60,np.mean(rewards)))
+                            dqn_agent.add_global_state_dict(simulator.global_state_tensor)  # a 4-dim np array
+
+                            # now reset transition and global state
+                            simulator.reset_storage()
+
+                    for charging_station_id in simulator.get_charging_station_ids():
+                        g.writelines('{},{}\n'.format(tick, charging_station_id))
+
+                    t_start = time.time()
+                    if tick % TRAINING_CYCLE == 0:
+                        dqn_agent.train(h)
+
+                    if tick % UPDATE_CYCLE == 0:
+                        dqn_agent.copy_parameter()
+                    t6 = time.time() - t_start
+                    print(
+                        'Iteration {} completed, Durations: step={:.3f}, training = {:.3f}'.format(
+                            tick / 60, t1, t6))
