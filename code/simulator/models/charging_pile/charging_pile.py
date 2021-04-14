@@ -32,6 +32,12 @@ class chargingpile:
             self.rate = CHARGE_ACCELERATOR * 25 / (60 * 60)  # mile per sec
             self.unit_time_price = 1.5 / (60 * 60)  # 1.5 USD per hour
 
+    def reset(self):
+        self.occupied = False
+        self.time_to_finish = 0
+        self.assigned_vehicle = None  # vehicle agent
+        self.served_num = 0
+
     def assign_vehicle(self, veh):
         self.occupied = True
         self.time_to_finish = (veh.get_target_SOC() - veh.get_SOC()) * veh.get_mile_of_range() / self.rate
@@ -83,6 +89,14 @@ class charging_station:
         self.x_coord, self.y_coord = xy_coord
         self.num_l2_pile = n_l2
         self.num_dcfc_pile = n_dcfast
+
+    def reset(self):
+        self.waiting_time = []
+        self.charging_time = []
+        self.queue = deque()  # waiting queue for vehicle
+        self.virtual_queue = []
+        self.time_to_cs = []
+        [p.reset() for p in self.piles] #reset the status of all charging piles
 
     def get_cs_location(self):
         return self.location

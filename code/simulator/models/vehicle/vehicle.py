@@ -23,8 +23,7 @@ class Vehicle(object):
         status_codes.V_STAY: Stay(),
         status_codes.V_TOBECRUISED: Tobecruised()
     }
-
-    def __init__(self, vehicle_state, NO_CHARGE = False, GLOBAL_MATCHING = False):
+    def __init__(self, vehicle_state,with_option,local_matching,with_charging,tick):
         if not isinstance(vehicle_state, VehicleState):
             raise ValueError
         self.state = vehicle_state
@@ -47,23 +46,18 @@ class Vehicle(object):
         self.recent_transitions = []  # deque(maxlen=10)
         self.flag = 0
         self.time_ticks = [0]
-        self.start_tick = 0
-        self.end_tick = 0
-        self.start_serve_tick = 0
-        self.start_wait_tick = 0
+        self.start_tick = tick
+        self.end_tick = tick
+        self.start_serve_tick = tick
+        self.start_wait_tick = tick
         self.mileage_per_charge_cycle = 0
         self.pickup_distance = 0
         self.dropoff_distance = 0
         self.pickup_duration = 0
         self.dropoff_duration = 0
-        if NO_CHARGE:
-            self.non_charging_mask = 0
-        else:
-            self.non_charging_mask = 1
-        if GLOBAL_MATCHING:
-            self.global_matching = 1
-        else:
-            self.global_matching = 0
+        self.non_charging_mask = 1 if with_charging else 0  # mask out SOC consumption
+        self.local_matching = 1 if local_matching else 0
+        self.with_option = 1 if with_option else 0
         self.non_included_od_pair = []
         self.require_online_query = False
         self.matching_od_pairs = []
@@ -85,16 +79,8 @@ class Vehicle(object):
                 # if sum(self.state.travel_dist)==0 and self.state.hex_id!=self.state.destination_hex:
                 #     print('no distance, origin={},destination={}'.format(self.state.hex_id,self.state.destination_hex))
             except:  # in case the route is non-existing...we make the vehicle to stay!
-                print(self.state.hex_id, self.state.destination_hex)
-                # if self.global_matching == 1:
-                #     self.non_included_od_pair = [hex_coords_list[self.state.hex_id],
-                #                                  hex_coords_list[self.state.current_hex]]
-                #     self.require_online_query = True
-                # if self.state.hex_id != self.state.current_hex:
-                #     response = engine.route_hex([[hex_coords[self.state.hex_id], hex_coords[self.state.current_hex]]],decode = False, annotations = False)
-                #     self.state.route = response[0][0]
-                #     self.state.time_to_destination = response[0][1]
-                #     self.state.travel_dist = response[0][2]
+                print('Issue processing trips',self.state.hex_id, self.state.destination_hex,self.state.status)
+
             self.state.need_route = False
             self.state.need_interpolate = True  # ask the remote to interpolate the coords
         if self.state.hex_id != self.state.current_hex:
@@ -136,7 +122,7 @@ class Vehicle(object):
             logger = getLogger(__name__)
             logger.error(self.state.to_msg())
             raise
-
+        # self.log_info(timetick)
     def dump_states(self, tick):
         state_rep = [tick, self.state.hex_id, self.state.SOC]
         return state_rep
@@ -243,10 +229,7 @@ class Vehicle(object):
 
         # only dump after one full transition is finished (and the new reward for matching is attached)
         # SOC follows exponential function:
-        if self.state.SOC > 0.4:
-            self.reward = 0
-        else:
-            self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC)
+        self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
         self.decay_lambda = 1.0
         self.start_tick = tick
         self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
@@ -265,19 +248,43 @@ class Vehicle(object):
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
         if self.state.SOC < 0:
             self.reward -= self.decay_lambda*SOC_PENALTY
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,(self.end_tick - self.start_tick)//60])
+        terminate=False
+        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,terminate, (self.end_tick - self.start_tick)//60])
         self.__reset_plan()
         self.__change_to_idle()
 
-    def head_for_customer(self, destination, customer_id):
+    def head_for_customer(self, destination, customer_hex_location):
         '''
         :destination: lon, lat
         '''
         assert self.__behavior.available
         self.__set_destination(destination)
-        self.state.assigned_customer_id = customer_id
-        self.__customers_ids.append(customer_id)
+        self.state.origin_hex=self.state.hex_id
+        self.state.destination_hex=customer_hex_location
+        self.state.need_route=True
+        self.state.assigned_customer_id = customer_hex_location
+        self.__customers_ids.append(customer_hex_location)
         self.__change_to_assigned()
+
+    def dump_last(self,tick): #store the transaction and retrive terminal flag
+        #dump all remaining transactions to DQN
+        if self.recent_transitions:
+            self.end_tick = tick
+            self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
+            # update the reward
+            terminate = True
+            if self.start_tick==self.recent_transitions[-1][0][0]: # start tick in the REPLAY BUFFER
+                self.recent_transitions[-1] = [self.start_state, self.action, self.end_state, self.reward,
+                                                   terminate, (self.end_tick - self.start_tick) // 60]
+            else: #not match
+                self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,
+                                                   terminate, (self.end_tick - self.start_tick) // 60])
+                # elif self.start_state is not None:
+                #     self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
+        exported_trans = self.recent_transitions
+        return exported_trans
+
+
 
     def head_for_charging_station(self, cs_id, cs_coord, tick, action_id):
         assert self.__behavior.available
@@ -303,6 +310,8 @@ class Vehicle(object):
     def pickup(self):
         # assert self.get_location() == self.customer.get_origin_lonlat()
         self.state.destination_hex = self.customer.get_destination()
+        self.state.origin_hex=self.state.hex_id
+        self.state.need_route=True
         self.customer.ride_on()
         self.__customers.append(self.customer)
         customer_id = self.customer.get_id()
@@ -334,14 +343,13 @@ class Vehicle(object):
         if self.state.SOC < 0:
             self.reward -= self.decay_lambda * SOC_PENALTY
         # update the reward
+        terminate_flag=False
         if self.recent_transitions:
             #     # update the reward, add previous SOC penalty back to avoid double count on mileage anxiety.
             #     last_step_SOC = self.recent_transitions[-1][0][-1]
-            self.recent_transitions[-1] =[self.start_state, self.action, self.end_state, self.reward, (self.end_tick - self.start_tick)//60]
-        elif self.start_state is not None:
-            self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, (self.end_tick - self.start_tick)//60])
-
-
+            self.recent_transitions[-1] =[self.start_state, self.action, self.end_state, self.reward, terminate_flag,(self.end_tick - self.start_tick)//60]
+        # elif self.start_state is not None:
+        #     self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
 
         self.state.current_capacity = 0
         self.__customers_ids = []
@@ -371,8 +379,9 @@ class Vehicle(object):
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
         cumulative_discounted_reward = self.decay_lambda * np.sum([self.discount_factor**(t+1) for t in range((self.end_tick-self.start_wait_tick)//60)])  # 60 is t_unit
         self.decay_lambda *= self.discount_factor**((self.end_tick-self.start_wait_tick)//60)  # update lambda, the last update was when it arrived at charging station
-        self.reward += - BETA_TIME * cumulative_discounted_reward - BETA_CHARGE_COST * unit_time_price * self.decay_lambda
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, (self.end_tick - self.start_tick)//60])
+        self.reward += - BETA_TIME * 60*cumulative_discounted_reward - BETA_CHARGE_COST * unit_time_price * self.decay_lambda
+        terminate_flag=False
+        self.recent_transitions.append([self.start_state, self.action, self.end_state, terminate_flag, self.reward, (self.end_tick - self.start_tick)//60])
         self.mileage_per_charge_cycle = 0
         self.__change_to_idle()
         self.__reset_plan()
@@ -387,7 +396,9 @@ class Vehicle(object):
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
         #  self.reward += - BETA_TIME * (self.end_tick - self.start_wait_tick) - self.decay_lambda* QUICK_END_CHARGE_PENALTY
         self.reward -= self.decay_lambda * QUICK_END_CHARGE_PENALTY
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, (self.end_tick - self.start_tick)//60])
+        self.decay_lambda *= self.discount_factor
+        terminate_flag=False
+        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, terminate_flag, (self.end_tick - self.start_tick)//60])
         self.mileage_per_charge_cycle = 0
         self.__change_to_idle()
         self.__reset_plan()
@@ -551,8 +562,7 @@ class Vehicle(object):
         self.dropoff_distance = 0
         self.pickup_duration = 0
         self.dropoff_duration = 0
-    # def __log(self):
-    #     # self.charging_dict.to_csv("output_charging.csv")
-    #     if FLAGS.log_vehicle:
-    #         return
-    #         # sim_logger.log_vehicle_event(self.state.to_msg())
+    # def log_info(self,tick):
+    #     if self.state.id in [1,100,1000] and tick < 3000*60:
+    #         with open('logs/vehicle_track/vehicle_track_{}.log'.format(self.state.id), 'a') as f:
+    #             f.write('tick:{},Veh_ID:{},Coord:{},SOC:{},Mileage:{},Total Payment:{},Reward:{}\n'.format(tick//60,self.state.id,self.state.real_time_location, self.state.SOC,self.mileage_per_charge_cycle*self.state.mile_of_range, self.total_earnings,self.reward))

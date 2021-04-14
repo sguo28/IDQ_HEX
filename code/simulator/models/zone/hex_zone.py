@@ -63,13 +63,25 @@ class hex_zone:
         self.served_pass = 0
         self.longwait_pass = 0
         self.veh_waiting_time = 0
-        self.rands = []  # the set of random arrivals generated
-        self.served_id = []
         self.total_pass = 0  # this also servers as passenger id
 
         self.t_unit = t_unit  # number of ticks per hour
         self.epoch_length = epoch_length
         self.q_network = None
+        self.narrivals = 0
+        self.next_narrivals = 0
+        # initialize the demand for each hexagon zone
+        self.init_demand()
+
+    def reset(self):
+        #reinitialize the status of the hex zones
+        self.passengers.clear()
+        self.vehicles.clear()
+        self.served_num = 0
+        self.removed_passengers = 0
+        self.served_pass = 0
+        self.longwait_pass = 0
+        self.veh_waiting_time = 0
         self.narrivals = 0
         self.next_narrivals = 0
         # initialize the demand for each hexagon zone
@@ -89,6 +101,7 @@ class hex_zone:
             self.arrivals = self.arrivals.flatten('F')  # flatten by columns-major
             self.arrivals = list(self.arrivals)#inverse
             self.arrivals.reverse()
+            self.arrivals.append(0)  #for output plotting purposes.
             # self.next_arrivals = list(self.arrivals[1:] + [self.arrivals[0]])
 
     def add_veh(self, veh):  # vehicle is an object
@@ -115,12 +128,11 @@ class hex_zone:
             # print('hour {}  tick{}'.format(hour, tick))
             narrivals = self.arrivals.pop()  # number of arrivals
 
-            self.narrivals += narrivals
+            self.narrivals = narrivals
             destination_rate = self.od_ratio[hour, :]
             if narrivals > 0 and sum(destination_rate) > 0:
                 # print('Tick {} hour {} and tunit{}'.format(tick,hour,self.t_unit))
                 destination_rate = destination_rate / sum(destination_rate)  # normalize to sum =1
-                # lets generate some random des
                 # destinations = np.random.choice(destination_rate.shape[-1], p=destination_rate,
                 #                                 size=narrivals)  # choose the destinations
                 destinations=weighted_random(destination_rate,narrivals)
@@ -219,7 +231,6 @@ class hex_zone:
             lon, lat = self.charging_station_loc[self.nearest_cs[action_id - RELOCATION_DIM]]
             charge_flag = 1
         target = (lon, lat)
-
         return target, charge_flag, target_hex_id, cid
 
     def get_num_arrivals(self):

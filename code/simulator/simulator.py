@@ -1,6 +1,6 @@
 import numpy as np
 from .models.charging_pile.charging_pile import charging_station
-# from .services.demand_generation_service import DemandGenerator
+from .services.demand_generation_service import DemandGenerator
 from common.time_utils import get_local_datetime
 from logger import sim_logger
 from logging import getLogger
@@ -13,10 +13,10 @@ from random import randrange
 import geopandas as gpd
 import time
 from scipy.spatial import KDTree
-from config.hex_setting import FLAGS, NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_BUFFER, hex_route_file, \
-    charging_station_data_path, STORE_TRANSITION_CYCLE, SIM_DAYS
+from config.hex_setting import FLAGS, NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_BUFFER, charging_station_data_path, hex_route_file, STORE_TRANSITION_CYCLE, INPUT_DIM
 import pickle
 import ray
+from dqn_agent.dqn_agent import DeepQNetworkAgent
 
 class Simulator(object):
     def __init__(self, start_time, timestep):
@@ -25,7 +25,7 @@ class Simulator(object):
         self.vehicle_queue = []
         sim_logger.setup_logging(self)
         self.logger = getLogger(__name__)
-        # self.demand_generator = DemandGenerator()
+        self.demand_generator = DemandGenerator()
         self.route_cache = {}
         self.current_dummyV = 0
         self.current_dqnV = 0
@@ -34,7 +34,7 @@ class Simulator(object):
         self.hex_zone_collection = {}
         self.vehicle_collection = {}
         # DQN for getting actions and dumping transitions
-        # self.dqn_agent = DeepQNetworkAgent()
+        self.dqn_agent = DeepQNetworkAgent()
         self.all_transitions = []
         self.charging_station_collections = []
         self.num_match = 0
@@ -75,9 +75,7 @@ class Simulator(object):
 
     def init_charging_station(self, file_name):
         """
-
-        :param file_name: charging_station file
-        :return:
+        todo: delete later: now we assume infinity and supercharging with 1e5 charging piles
         """
         with open(file_name, 'r') as f:
             next(f)
@@ -103,8 +101,8 @@ class Simulator(object):
         charging_stations = gpd.read_file(file_charging)  # point geometry # 'data/NYC_shapefiles/processed_cs.shp'
         self.charging_kdtree = KDTree(charging_stations[['lon', 'lat']])
         self.hex_kdtree = KDTree(df[['lon', 'lat']])
-        with open(hex_route_file, 'rb') as f:
-            self.hex_routes = pickle.load(f)
+        with open(hex_route_file,'rb') as f:
+            self.hex_routes=pickle.load(f)
 
         matchzones = np.unique(df['cluster_la'])
 
@@ -118,12 +116,12 @@ class Simulator(object):
         travel_time = self.process_trip(travel_time_file)  #
 
         # preprocessed od time mat from OSRM engine
-        od_time = np.zeros([NUM_REACHABLE_HEX, NUM_REACHABLE_HEX])
-        for (o, d) in self.hex_routes.keys():
-            od_time[o, d] = sum(self.hex_routes[(o, d)]['travel_time'])
-        od_time[np.isnan(od_time)] = 1e8  # set a large enough number
+        od_time = np.zeros([NUM_REACHABLE_HEX,NUM_REACHABLE_HEX])
+        for (o,d) in self.hex_routes.keys():
+            od_time[o,d] = sum(self.hex_routes[(o,d)]['travel_time'])
+        od_time[np.isnan(od_time)] = 1e8 # set a large enough number
 
-        epoch_length = 60 * 24 * SIM_DAYS  # this is the total number of ticks set for simulation, change this value.'
+        epoch_length = 60 * 24 * 7  # this is the total number of ticks set for simulation, change this value.'
         t_unit = 60  # number of time steps per hour
 
         # we initiaze the set of hexagone zones first
@@ -131,7 +129,7 @@ class Simulator(object):
         total_demand = 0
         charging_coords = charging_stations[['lon', 'lat']].values.tolist()
         charging_hexes = charging_stations[['hex_id']].values.tolist()
-        charging_hexes = [item[0] for item in charging_hexes]
+        charging_hexes=[item[0] for item in charging_hexes]
         for h_idx, coords, match_id in zip(hex_ids, hex_coords, hex_to_match):
             neighbors = df[df.geometry.touches(df.geometry[h_idx])].index.tolist()  # len from 0 to 6
             _, charging_idx = self.charging_kdtree.query(coords, k=n_nearest)  # charging station id
@@ -141,6 +139,7 @@ class Simulator(object):
                                                        charging_hexes, charging_coords, demand[:, h_idx, :],
                                                        travel_time[:, h_idx, :], t_unit, epoch_length)
         # print('highest demand per tick=',maxdemand,'total demand for the first hour=',total_demand)
+
 
         # ray init hex, try this
         hex_collects = []
@@ -165,6 +164,7 @@ class Simulator(object):
 
         # init entering-market vehicle queue
 
+
         vehicle_hex_ids = [hex_ids[i] for i in
                            np.random.choice(len(hex_ids), size=FLAGS.vehicles)]  # , p=p)]
         # vehicle_hex_ids = [hex_ids[76] for _ in range(FLAGS.vehicles)]  # , p=p)]
@@ -176,7 +176,7 @@ class Simulator(object):
         self.vehicle_queue = q
         print('initialize vehicle queue compelte')
 
-    def par_step_download(self):  # we use parallel update to call the step function.
+    def par_step(self):  # we use parallel update to call the step function.
         '''
         Parallel run of the simulator that involves the following key steps:
         1. conduct the matching for each matching zone
@@ -187,7 +187,7 @@ class Simulator(object):
         :return:
         '''
         # conduct matching first
-        tick = self.__t - self.start_time  # note that self.__t starts from 0 # unit: sec
+        tick = self.__t - self.start_time  # unit: sec
         t_start = time.time()
 
         [m.match.remote() for m in self.match_zone_collection]  # force this to complete
@@ -195,7 +195,7 @@ class Simulator(object):
         # dispatched vehicles which have been attached dispatch actions.
         ray.get([m.dispatch.remote(tick) for m in self.match_zone_collection])
 
-        # self.download_match_zone_metrics()
+        #self.download_match_zone_metrics()
         # update passenger status
         [m.update_passengers.remote() for m in self.match_zone_collection]
 
@@ -204,46 +204,49 @@ class Simulator(object):
         self.download_vehicles()
         t_d_update = time.time() - t1
 
-        self.update_vehicles()  # push routes inside if needed
+        self.update_vehicles(self.__t) # push routes inside if needed
 
-        t1 = time.time()
-        # update charging stations...
+
+        t1=time.time()
+        #update charging stations...
         [cs.step(self.__dt, self.__t) for cs in self.charging_station_collections]
 
-        # cs_time = time.time() - t1
+        cs_time=time.time()-t1
 
         self.enter_market()
-        # print('Iteration {} completed, download time={:.3f}'.format(tick / 60, t_d_update))
 
-    def par_step_push(self):
         t1 = time.time()
         self.push_vehicles(self.__dt,self.__t)
-        # t_p_update = time.time() - t1
+        t_p_update = time.time() - t1
 
         #after the push, call the vehicle to step for all vehicles in each zone
         # t1 = time.time()
-        self.vehicle_step_update(self.__dt,self.__t) # interpolate routes and update vehicle status
+        # self.vehicle_step_update(self.__dt,self.__t) # interpolate routes and update vehicle status
         # t_v_update=time.time()-t1
 
         # update the demand for each matching zone
 
-        ray.get([c.async_demand_gen.remote(self.__t) for c in self.match_zone_collection])
+        ray.get([c.async_demand_gen.remote(tick) for c in self.match_zone_collection])
 
         '''
         todo: add a download and push function for charging stations. 
         '''
 
+
         self.download_match_zone_metrics()
 
+        STORE_TRANSITION_CYCLE=1 #store everytick
         if self.__t % STORE_TRANSITION_CYCLE == 0: # STORE_TRANSITION_CYCLE = 60*60 sec
             self.store_transitions_from_veh()
-
         self.__update_time()
         if self.__t % 3600 == 0:
-            self.logger.info("Elapsed : {}".format(get_local_datetime(self.__t)))  # added origin UNIX time inside func.
+            self.logger.info("Elapsed : {}".format(get_local_datetime(self.__t)))
+        t_end = time.time() - t_start
 
-        # print('Iteration {} completed, push time={:.3f}'.format(tick / 60, t_p_update))
+        print('Iteration {} completed, total cpu time={:.3f}, time for vehicle status download={:.3f}, push time={:.3f}'.format(tick / 60, t_end,
+                                                                                                    t_d_update,t_p_update))
         # finally identify new vehicles, and update location of existing vehicles
+        # the results is a list of list of dictionaries.
 
     def download_match_zone_metrics(self):
         metrics = ray.get([m.get_metrics.remote() for m in self.match_zone_collection])
@@ -263,7 +266,7 @@ class Simulator(object):
                 hexs.vehicles = veh  # make a hard copy
                 # print('Download success, Number of vehicle for hex {} is {}:'.format(hexs.hex_id,len(veh)))
 
-    def update_vehicles(self):
+    def update_vehicles(self,tick):
         '''
         1. loop through all hexagones and update the vehicle status
         2. add veh to charging station
@@ -271,19 +274,27 @@ class Simulator(object):
         :return:
         '''
 
-        # add vehicles to charging stations and remove from the hex zone
+        #add vehicles to charging stations and remove from the hex zone
 
-        vehs_to_update = [veh for hex in self.hex_zone_collection.values() for veh in hex.vehicles.values()]
-
+        vehs_to_update=[veh for hex in self.hex_zone_collection.values() for veh in hex.vehicles.values()]
         [vehicle.update_info(self.hex_zone_collection, self.hex_routes) for vehicle in vehs_to_update]
 
-        self.charging_station_ids = [vehicle.get_assigned_cs_id() \
+        self.charging_station_ids = [vehicle.get_assigned_cs_id()\
                                      for vehicle in vehs_to_update if vehicle.state.status == status_codes.V_WAITPILE]
 
         [self.charging_station_collections[vehicle.get_assigned_cs_id()].add_arrival_veh(vehicle) \
          for vehicle in vehs_to_update if vehicle.state.status == status_codes.V_WAITPILE]
 
+        dqn_agents = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if
+                      vehicle.state.agent_type == agent_codes.dqn_agent and vehicle.state.status == status_codes.V_IDLE]
 
+        if len(dqn_agents) > 0:
+            state_batches = [veh.dump_states(tick) for veh in dqn_agents]  # (tick, veh_id, hex_id, SOC)
+            num_valid_relos = [len([0] + self.hex_zone_collection[veh.get_hex_id()].neighbor_hex_id) for veh in
+                               dqn_agents]  # [0] means stay still
+            action_ids = self.dqn_agent.get_actions(state_batches, num_valid_relos)
+            for veh,action_id in zip(dqn_agents,action_ids):
+                veh.send_to_dispatching_pool(action_id)
         total_running_veh=sum([len(hex.vehicles.keys()) for hex in self.hex_zone_collection.values()])
         total_charge_wait_veh=sum([len(cs.queue) for cs in self.charging_station_collections])
         total_charging_vec=sum([sum([1 for p in cs.piles if p.occupied==True]) for cs in self.charging_station_collections])
@@ -291,28 +302,6 @@ class Simulator(object):
         average_SOC=np.mean([veh.state.SOC for veh in vehs_to_update])
         print('Total number of vehicles in the system={}, total running={}, total waiting for charge={}, total charging={}, Average SOC={}'\
               .format(total_veh,total_running_veh,total_charge_wait_veh,total_charging_vec,average_SOC))
-
-
-    def get_states(self):
-        dqn_agents = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if
-                      vehicle.state.agent_type == agent_codes.dqn_agent and \
-                      vehicle.state.status == status_codes.V_IDLE]
-
-        if len(dqn_agents) > 0:
-            state_batches = [veh.dump_states(self.__t) for veh in dqn_agents]  # (tick, veh_id, hex_id, SOC)
-            num_valid_relos = [len([0] + self.hex_zone_collection[veh.get_hex_id()].neighbor_hex_id) for veh in
-                               dqn_agents]  # [0] means stay still
-            return state_batches, num_valid_relos
-        else:
-            return None
-
-    def attach_actions_to_vehs(self,action_ids):
-        dqn_agents = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if
-                      vehicle.state.agent_type == agent_codes.dqn_agent and \
-                      vehicle.state.status == status_codes.V_IDLE]
-
-        for veh, action_id in zip(dqn_agents, action_ids):
-            veh.send_to_dispatching_pool(action_id)
 
     def push_vehicles(self,timestep,timetick):
         '''
@@ -401,42 +390,42 @@ class Simulator(object):
         location = (self.hex_zone_collection[vehicle_hex_id].lon, self.hex_zone_collection[
             vehicle_hex_id].lat)  # update its coordinate with the centroid of the hexagon
 
-        # append this new available vehicle to the hexagon zone
         self.hex_zone_collection[vehicle_hex_id].add_veh(Vehicle(VehicleState(vehicle_id, location, vehicle_hex_id,
-                                                                              agent_type)))
+                                                                              agent_type)))  # append this new available vehicle to the hexagon zone
 
     def __update_time(self):
         self.__t += self.__dt
 
     def store_transitions_from_veh(self):
         """
-        vehicle.dump_transition() returns a list of list. [[s,a,s_next,r]]
+        vehicle.dump_transition() returns a list of list. [[s,a,s_next,r,flag]]
         """
+        self.all_transitions = []
+
         for hex in self.hex_zone_collection.values():
             for vehicle in hex.vehicles.values():
                 self.all_transitions += vehicle.dump_transitions()
 
-
     def dump_transition_to_dqn(self):
         """
+        todo: change type to list?
         convert transitions to batches of state, action, next_state, and off-duty flag.
         :return:
         """
-        state, action, next_state, reward = None, None, None, None
-
         all_transitions = np.array(self.all_transitions,dtype=object)
         if len(all_transitions)>0:
             # print('First row of Transitions are:',all_transitions[1])
-            [state, action, next_state, reward] = [all_transitions[:,i] for i in range(4)] # 4 is dim of transition
-
-        return state,action,next_state,reward
-
+            [state, action, next_state, reward, flag] = [all_transitions[:,i] for i in range(INPUT_DIM)] # 5 is dim of transition
+            return state,action,next_state,reward,flag
+        else:
+            return None
 
     def get_current_time(self):
         return self.__t
 
     def summarize_metrics(self):
         '''
+        :todo: find where to export get_num_of_match: matching was posted to remote.
         get metrics of all DQN vehicles
         '''
         all_vehicles = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if

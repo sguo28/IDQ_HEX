@@ -138,7 +138,7 @@ class matching_zone(object):
         #     'Current matching zone={}, Total matched passengers={}, Number of passengers={}, Number of drivers={}'.format(
         #         self.matching_zone_id, self.num_matches, len(passengers.keys()), len(vehicles.keys())))
         if len(passengers.keys()) > 0 and len(vehicles.keys()) > 0:
-            vehicles = {key: value for key, value in vehicles.items() if value.state.status in [status_codes.V_IDLE,status_codes.V_STAY] and value.state.SOC>0.1}
+            vehicles = {key: value for key, value in vehicles.items() if value.state.status == status_codes.V_IDLE and value.state.SOC>0.1}
             if len(vehicles.keys()) > 0:
                 self.num_matches += self.match_requests(vehicles, passengers)
 
