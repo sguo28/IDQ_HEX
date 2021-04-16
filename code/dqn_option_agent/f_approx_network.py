@@ -6,7 +6,7 @@ class F_Network(nn.Module):
     def __init__(self):
         super(F_Network,self).__init__()
         ## global state
-        self.global_fc = nn.Sequential(nn.Linear(1*54*46,256), nn.ReLU(),nn.Dropout(0.1))
+        self.global_fc = nn.Sequential(nn.Linear(1*54*46,256), nn.ReLU())
         self.fc1 = nn.Sequential(nn.Linear(256,64) , nn.ReLU())
         self.fc2 = nn.Linear(64, 1)
 

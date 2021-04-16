@@ -20,7 +20,7 @@ class OptionNetwork(nn.Module):
 
         self.hexconv_1 = hexagdly.Conv2d(in_channels=4, out_channels=16, kernel_size=5, stride=3, bias=True)
         # self.hexpool = hexagdly.MaxPool2d(kernel_size=1, stride=2)
-        self.hexconv_2 = hexagdly.Conv2d(16, 64, 3, 3, bias=True)  # 1, 16, 15, 18
+        self.hexconv_2 = hexagdly.Conv2d(16, 64, 3, 3)  # 1, 16, 15, 18
         self.global_fc = nn.Sequential((nn.Linear(64*5*6, 256)))  # ,nn.Dropout(0.5)
         ## local state
         self.local_fc = nn.Linear(input_dim,256)
@@ -30,21 +30,21 @@ class OptionNetwork(nn.Module):
         self.output_v = nn.Linear(64,1)
 
         ## concat_fc
-        self.cat_fc = nn.Linear(512,256)
+        self.cat_fc = nn.Linear(64*5*6+3,256)
 
     def forward(self,local_state, global_state):
         ## global state
         conv1_out = F.relu(self.hexconv_1(global_state))  # 1, 16, 15, 18
         conv2_out = F.relu(self.hexconv_2(conv1_out))  # 1, 64, 5, 6
         flattened = torch.flatten(conv2_out, start_dim=1) # 1, 64*5*6
-        global_fc_out = self.global_fc(flattened)
+        # global_fc_out = self.global_fc(flattened)
 
         ## local state
         # one_hot_hex = F.one_hot(local_state[:,0].to(dtype=torch.int64), num_classes = NUM_REACHABLE_HEX)
-        one_hot_soc = F.one_hot(local_state[:,1].to(dtype=torch.int64), num_classes = LEVEL_OF_SOC)
-        local_fc_out = F.relu(self.local_fc(torch.cat([local_state[:,2:],one_hot_soc], dim = 1)))
+        # one_hot_soc = F.one_hot(local_state[:,1].to(dtype=torch.int64), num_classes = LEVEL_OF_SOC)
+        # local_fc_out = F.relu(self.local_fc(torch.cat([local_state[:,2:],one_hot_soc], dim = 1)))
 
-        concat_fc = torch.cat((global_fc_out,local_fc_out),dim=1)
+        concat_fc = torch.cat((flattened,local_state[:,1:]),dim=1)
         fc_out = F.relu(self.cat_fc(concat_fc))
         adv_out1 = F.relu(self.fc_adv(fc_out))
         v_out1 = F.relu(self.fc_v(fc_out))
@@ -67,7 +67,7 @@ class TargetOptionNetwork(nn.Module):
 
         self.hexconv_1 = hexagdly.Conv2d(in_channels=4, out_channels=16, kernel_size=5, stride=3, bias=True)
         # self.hexpool = hexagdly.MaxPool2d(kernel_size=1, stride=2)
-        self.hexconv_2 = hexagdly.Conv2d(16, 64, 3, 3, bias=True)  # 1, 16, 15, 18
+        self.hexconv_2 = hexagdly.Conv2d(16, 64, 3, 3)  # 1, 16, 15, 18
         self.global_fc = nn.Sequential((nn.Linear(64 * 5 * 6, 256)))  # ,nn.Dropout(0.5)
         ## local state
         self.local_fc = nn.Linear(input_dim, 256)
@@ -77,21 +77,21 @@ class TargetOptionNetwork(nn.Module):
         self.output_v = nn.Linear(64, 1)
 
         ## concat_fc
-        self.cat_fc = nn.Linear(512, 256)
+        self.cat_fc = nn.Linear(64 * 5 * 6 + 3, 256)
 
     def forward(self, local_state, global_state):
         ## global state
         conv1_out = F.relu(self.hexconv_1(global_state))  # 1, 16, 15, 18
         conv2_out = F.relu(self.hexconv_2(conv1_out))  # 1, 64, 5, 6
         flattened = torch.flatten(conv2_out, start_dim=1)  # 1, 64*5*6
-        global_fc_out = self.global_fc(flattened)
+        # global_fc_out = self.global_fc(flattened)
 
         ## local state
         # one_hot_hex = F.one_hot(local_state[:,0].to(dtype=torch.int64), num_classes = NUM_REACHABLE_HEX)
-        one_hot_soc = F.one_hot(local_state[:, 1].to(dtype=torch.int64), num_classes=LEVEL_OF_SOC)
-        local_fc_out = F.relu(self.local_fc(torch.cat([local_state[:, 2:], one_hot_soc], dim=1)))
+        # one_hot_soc = F.one_hot(local_state[:,1].to(dtype=torch.int64), num_classes = LEVEL_OF_SOC)
+        # local_fc_out = F.relu(self.local_fc(torch.cat([local_state[:,2:],one_hot_soc], dim = 1)))
 
-        concat_fc = torch.cat((global_fc_out, local_fc_out), dim=1)
+        concat_fc = torch.cat((flattened, local_state[:, 1:]), dim=1)
         fc_out = F.relu(self.cat_fc(concat_fc))
         adv_out1 = F.relu(self.fc_adv(fc_out))
         v_out1 = F.relu(self.fc_v(fc_out))
@@ -101,3 +101,4 @@ class TargetOptionNetwork(nn.Module):
 
         q_values = v_value + adv_values - torch.mean(adv_values, dim=1, keepdim=True)
         return q_values
+

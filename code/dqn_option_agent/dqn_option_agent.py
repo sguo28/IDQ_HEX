@@ -1,20 +1,21 @@
 import os
 import random
-from collections import defaultdict
+from collections import OrderedDict,defaultdict
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from config.setting import LEARNING_RATE, GAMMA, REPLAY_BUFFER_SIZE, BATCH_SIZE, RELOCATION_DIM, CHARGING_DIM, \
     INPUT_DIM, OPTION_DIM, FINAL_EPSILON, HIGH_SOC_THRESHOLD, LOW_SOC_THRESHOLD, CLIPPING_VALUE, START_EPSILON, \
-    EPSILON_DECAY_STEPS, OPTION_SAVE_PATH, SAVING_CYCLE, CNN_RESUME, STORE_TRANSITION_CYCLE, OPTION_OUTPUT_DIM, \
-    NUM_REACHABLE_HEX, DQN_OUTPUT_DIM, OPTION_GENERATION_CYCLE, TRAIN_OPTION_CYCLE, DQN_OUTPUT_DIM
+    EPSILON_DECAY_STEPS, SAVING_CYCLE, STORE_TRANSITION_CYCLE, NUM_REACHABLE_HEX, OPTION_DQN_SAVE_PATH, \
+    DQN_OUTPUT_DIM, H_AGENT_SAVE_PATH, TERMINAL_STATE_SAVE_PATH
 from .dqn_option_network import DQN_network, DQN_target_network
 from .dqn_option_feature_constructor import FeatureConstructor
 from .replay_buffers import BatchReplayMemory
 from torch.optim.lr_scheduler import StepLR
-from .option_sampling_agent import OptionAgent
-from collections import deque
+from .option_network import OptionNetwork
+
+
 class DeepQNetworkOptionAgent:
     def __init__(self,hex_diffusion, isoption=False,islocal=True,ischarging=True):
         self.learning_rate = LEARNING_RATE  # 1e-4
@@ -25,14 +26,13 @@ class DeepQNetworkOptionAgent:
         self.memory = BatchReplayMemory(REPLAY_BUFFER_SIZE)
         self.batch_size = BATCH_SIZE
         self.clipping_value = CLIPPING_VALUE
-        self.input_dim = INPUT_DIM
-        self.relocation_dim = RELOCATION_DIM
-        self.charging_dim = CHARGING_DIM
-        self.num_terminate_state = OPTION_DIM
-        self.output_dim = DQN_OUTPUT_DIM  #  10+7+5 = 22
-        self.option_output_dim = OPTION_OUTPUT_DIM # should be 12, but currently 10.
+        self.input_dim = INPUT_DIM  # 3 input state
+        self.relocation_dim = RELOCATION_DIM  # 7
+        self.charging_dim = CHARGING_DIM  # 5
+        self.option_dim = OPTION_DIM  # 3
+        self.output_dim = DQN_OUTPUT_DIM  # 7+5+3 = 15
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.path = OPTION_SAVE_PATH
+        self.path = OPTION_DQN_SAVE_PATH
         self.state_feature_constructor = FeatureConstructor()
 
         # init higher level DQN network
@@ -44,27 +44,29 @@ class DeepQNetworkOptionAgent:
         self.load_network()
         self.q_network.to(self.device)
         self.target_q_network.to(self.device)
+
         self.decayed_epsilon = self.start_epsilon
         # init option network
-        self.option_optimizer = torch.optim.Adam(self.q_network.parameters(), lr=self.learning_rate)
-        self.lr_scheduler = StepLR(optimizer=self.option_optimizer, step_size=1000, gamma=0.99)
-
         self.record_list = []
-        self.global_state_dict = defaultdict()
+        self.global_state_dict = OrderedDict()
         self.time_interval = int(0)
         self.global_state_capacity = 5*1440 # we store 5 days' global states to fit replay buffer size.
         self.with_option = isoption
         self.with_charging = ischarging
         self.local_matching = islocal
         self.hex_diffusion = hex_diffusion
-        self.option_queue = deque()
+
+        self.h_network_list = []
+        self.load_option_network()
+        self.middle_terminal = self.init_terminal_states()
+
 
     def load_network(self, RESUME = False):
         if RESUME:
             lists = os.listdir(self.path)
             lists.sort(key=lambda fn: os.path.getmtime(self.path + "/" + fn))
             newest_file = os.path.join(self.path, lists[-1])
-            path_checkpoint = newest_file  #'logs/test/cnn_dqn_model/duel_dqn_69120.pkl'  #
+            path_checkpoint = newest_file
             checkpoint = torch.load(path_checkpoint)
 
             self.q_network.load_state_dict(checkpoint['net'])
@@ -75,8 +77,34 @@ class DeepQNetworkOptionAgent:
             # self.optimizer.load_state_dict(checkpoint['optimizer'])
             print('Successfully load saved network starting from {}!'.format(str(self.train_step)))
 
+    def load_option_network(self):
+        for option_net_id in range(self.option_dim):
+            h_network = OptionNetwork(self.input_dim,1+6+5)
+            checkpoint = torch.load(H_AGENT_SAVE_PATH + 'h_network_%d_%d_%d_%d.pkl' % (
+            bool(self.with_option), bool(self.with_charging), bool(self.local_matching), 1440*(option_net_id+1)))  # lets try the saved networks from the first three episodes.
+            h_network.load_state_dict(checkpoint['net'])  # , False
+            self.h_network_list.append(h_network.to(self.device))
+            print('Successfully load H network {}, total option network num is {}'.format(option_net_id,len(self.h_network_list)))
+
+    def init_terminal_states(self):
+        """
+        we initial a dict to check the sets of terminal hex ids by hour by option id
+        :param oid: ID for option network
+        :return:
+        """
+        middle_terminal = defaultdict(list)
+        for oid in range(len(self.h_network_list)):
+            with open(TERMINAL_STATE_SAVE_PATH+'term_states_%d.csv'%oid,'r') as ts:
+                next(ts)
+                for lines in ts:
+                    line = lines.strip().split(',')
+                    hr, hid = line  # option_network_id, hour, hex_ids in terminal state
+                    middle_terminal[oid,int(hr)].append(hid)
+        return middle_terminal
+
     def get_actions(self, states, num_valid_relos, global_state):
         """
+        option_ids is at the first three slots in the action space, so action id <3 means the corresponding h_network id
         :param global_states:
         :param states: tuple of (tick, hex_id, SOC) and SOC is 0 - 100%
         :param num_valid_relos: only relocation to ADJACENT hexes / charging station is valid
@@ -86,19 +114,19 @@ class DeepQNetworkOptionAgent:
         with torch.no_grad():
             self.decayed_epsilon = max(self.final_epsilon, (self.start_epsilon - self.train_step * (
                     self.start_epsilon - self.final_epsilon) / self.epsilon_steps))
-            option_mask = self.get_option_mask(states) # omit the options that consider state as terminate.
+            option_mask = self.get_option_mask(states) # if the state is already considered as terminal, we dont append option to it.
             if random.random() > self.decayed_epsilon:  # epsilon = 0.1
-                state_reps = [self.state_feature_constructor.construct_state_features(state) for state in states]
-                hex_diffusions = [np.tile(self.hex_diffusion[state[1]],(1,1,1)) for state in states]  # state[1] is hex_id
+                state_reps = np.array(self.state_feature_constructor.construct_state_features(state) for state in states)
+                hex_diffusions = np.array([np.tile(self.hex_diffusion[state[1]],(1,1,1)) for state in states])  # state[1] is hex_id
                 full_action_values = self.q_network.forward(
-                    torch.from_numpy(np.array(state_reps)).to(dtype=torch.float32, device=self.device),
-                    torch.from_numpy(np.concatenate([np.tile(global_state,(len(states),1,1,1)),np.array(hex_diffusions)],axis=1)).to(dtype=torch.float32, device=self.device))
+                    torch.from_numpy(state_reps).to(dtype=torch.float32, device=self.device),
+                    torch.from_numpy(np.concatenate([np.tile(global_state,(len(states),1,1,1)),hex_diffusions],axis=1)).to(dtype=torch.float32, device=self.device))
                 mask = self.get_action_mask(states, num_valid_relos)
                 # print('take a look at processed mask {}'.format(mask))
                 full_action_values[mask] = -9e10
                 full_action_values[option_mask] = -9e10
                 action_indexes = torch.argmax(full_action_values, dim=1).tolist()
-                option_target_hex_ids = [self.option_queue[action_id].get_target_hex_id() if action_id < self.option_dim else -1 for action_id in action_indexes ]
+                # convert option to target hex_id
             else:
                 full_action_values = np.random.random(
                     (len(states), self.output_dim))  # generate a matrix with values from 0 to 1
@@ -111,23 +139,37 @@ class DeepQNetworkOptionAgent:
                         full_action_values[i][:(self.option_dim+self.relocation_dim)] = -1  # no relocation, must charge
 
                 action_indexes = np.argmax(full_action_values, 1).tolist()
-                option_target_hex_ids = np.random.randint(NUM_REACHABLE_HEX, size=len(action_indexes)) # we generate a enough long list of random numbers
-                option_target_hex_ids = [option_target_hex_ids[i] if action_id < self.option_dim else -1 for i, action_id in enumerate(action_indexes)]
+            # after getting all action ids by DQN, we convert the ones triggered options to the primitive action ids.
+            action_indexes = self.convert_option_to_primitive_action_id(action_indexes,state_reps,global_state,hex_diffusions,mask)
 
-            #  the randomly selected 10 options corresponds to top 10 destination hex_ids that are generated by OptionAgent.
-            # need to translate option ids to hex_ids from Option Agent.
+        return action_indexes
 
-        return action_indexes, option_target_hex_ids
-
-    def higher_level_dqn_update(self):
-        if self.train_step % OPTION_GENERATION_CYCLE == 0:
-            self.append_new_option()
-        if self.train_step % TRAIN_OPTION_CYCLE == 0:
-            [op.train_option_network() for op in self.option_queue]
-
-    def append_new_option(self):
-        option = OptionAgent(self.hex_diffusion)
-        self.option_queue.append(option)
+    def convert_option_to_primitive_action_id(self,action_indexes,state_reps,global_state,hex_diffusions,mask):
+        """
+        we convert the option ids, e.g., 0,1,2 for each H network, to the generated primitive action ids
+        :param action_indexes:
+        :param state_reps:
+        :param global_state:
+        :param hex_diffusions:
+        :param mask:
+        :return:
+        """
+        ids_require_option = defaultdict(list)
+        for id, action_id in enumerate(action_indexes):
+            if action_id < self.option_dim:
+                ids_require_option[action_id].append(id)
+        for action_id in range(self.option_dim):
+            full_option_values = self.h_network_list[action_id].forward(
+                torch.from_numpy(state_reps[ids_require_option[action_id]]).to(dtype=torch.float32, device=self.device),
+                torch.from_numpy(np.concatenate(
+                    [np.tile(global_state, (len(action_indexes), 1, 1, 1)), hex_diffusions[ids_require_option[action_id]]],
+                    axis=1)).to(dtype=torch.float32, device=self.device))
+            option_mask = mask[ids_require_option[action_id]]
+            full_option_values[option_mask] = -9e10
+            premitive_action_id = torch.argmax(full_option_values, dim=1).tolist()
+            action_indexes[ids_require_option[
+                action_id]] = premitive_action_id  # cover the option id with the generated primitive action id
+        return action_indexes
 
     def add_global_state_dict(self, global_state_list):
         current_tick = self.time_interval
@@ -193,14 +235,12 @@ class DeepQNetworkOptionAgent:
         q_state_action = self.get_main_Q(state_batch, global_state_batch).gather(1, action_batch.long())
         # add a mask
         all_q_ = self.get_target_Q(next_state_batch, global_next_state_batch)
-        mask = self.get_action_mask(batch.next_state, batch.valid_action_num)  # action mask for next state
+        mask_ = self.get_action_mask(batch.next_state, batch.valid_action_num)  # action mask for next state
         option_mask = self.get_option_mask(batch.next_state)
-        all_q_[mask] = -9e10
+        all_q_[mask_] = -9e10
         all_q_[option_mask] = -9e10
         maxq = all_q_.max(1)[0].detach().unsqueeze(1)
-        delta_f_value = [self.option_queue[action_id].get_f_value([state_batch[id][1]]) - self.option_queue[action_id].get_f_value([next_state_batch[id][1]]) \
-                             if action_id < self.option_dim else 0 for id,action_id in enumerate(batch.action)]
-        y = delta_f_value + reward_batch + maxq*torch.pow(self.gamma,time_step_batch)
+        y = reward_batch + maxq*torch.pow(self.gamma,time_step_batch)
         loss = F.smooth_l1_loss(q_state_action, y)
         self.optimizer.zero_grad()
         loss.backward()
@@ -208,22 +248,20 @@ class DeepQNetworkOptionAgent:
         self.optimizer.step()
         self.lr_scheduler.step()
 
-        self.record_list.append([self.train_step, round(float(loss),3), round(float(reward_batch.view(-1).mean()),3),self.optimizer.state_dict()['param_groups'][0]['lr'],batch.reward[0], batch.state[0][-1]])
+        self.record_list.append([self.train_step, round(float(loss),3), round(float(reward_batch.view(-1).mean()),3)])
         self.save_parameter(record_hist)
         print('Training step is {}; Learning rate is {}; Epsilon is {}:'.format(self.train_step,self.lr_scheduler.get_lr(),round(self.decayed_epsilon,4)))
 
     def get_action_mask(self, batch_state, batch_valid_action):
         """
-        the dim of action is 22 in total.
-        first ten is for options, then next 7 is for reposition, last 5 is for charging.
-        :param batch_state:
-        :param batch_valid_action:
+        the action space: the first 3 is for h_network slots, then 7 relocation actions,and 5 nearest charging stations.
+        :param batch_state: state
+        :param batch_valid_action: info that limites to relocate to reachable neighboring hexes
         :return:
         """
-        mask = np.zeros([len(batch_state), self.output_dim])
+        mask = np.zeros([len(batch_state), self.output_dim])  # (num_state, 15)
         for i, state in enumerate(batch_state):
-            mask[i][(self.option_dim+ batch_valid_action[i]):(self.option_dim+self.relocation_dim)] = 1
-            # here the SOC in state is still continuous. the categorized one is in state reps.
+            mask[i][(self.option_dim+ batch_valid_action[i]):(self.option_dim+self.relocation_dim)] = 1  # limited to relocate to reachable neighboring hexes
             if state[-1] > HIGH_SOC_THRESHOLD:
                 mask[i][(self.option_dim+self.relocation_dim):] = 1  # no charging, must relocate
             elif state[-1] < LOW_SOC_THRESHOLD:
@@ -234,19 +272,25 @@ class DeepQNetworkOptionAgent:
 
     def get_option_mask(self,states):
         """
-        append masks to the options that think the states as terminate.
-        if no option is generated yet, we keep the option masked as 1. (we initial the mask by np.ones)
+        self.is_terminal is to judge if the state is terminal state with the info of hour and hex_id
         :param states:
         :return:
         """
-        termiante_option_mask = np.ones((len(states),self.option_dim))
-        if self.option_queue:
-            for i,op in enumerate(self.option_queue):
-                mask_col = [0 if op.get_f_value([state[1]]) > op.lower_threshold else 1 for state in states]
-                termiante_option_mask[:,i] = mask_col # the j-th element of the i-th column is masked
+        terminate_option_mask = np.ones((len(states),self.option_dim))
+        for oid in range(len(self.h_network_list)):
+            terminate_option_mask[:,oid] = self.is_terminal(states,oid)  # set as 0 if not in terminal set
 
-        termiante_option_mask = torch.from_numpy(termiante_option_mask).to(dtype=torch.bool, device=self.device)
-        return termiante_option_mask
+        terminate_option_mask = torch.from_numpy(terminate_option_mask).to(dtype=torch.bool, device=self.device)
+        return terminate_option_mask
+
+    def is_terminal(self,states,oid):
+        """
+
+        :param states:
+        :return: a list of bool
+        """
+        return [1 if state in self.middle_terminal[oid][state[0] // (60 * 60) % 24] else 0 for state in states]
+
 
 
     def save_parameter(self, record_hist):
@@ -261,10 +305,10 @@ class DeepQNetworkOptionAgent:
             if not os.path.isdir(self.path):
                 os.mkdir(self.path)
             # print('the path is {}'.format('logs/dqn_model/duel_dqn_%s.pkl'%(str(self.train_step))))
-            torch.save(checkpoint, 'logs/test/cnn_dqn_model/duel_dqn_%d_%d_%d_%s.pkl' % (bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
+            torch.save(checkpoint, 'logs/test/cnn_dqn_model/dqn_with_option_%d_%d_%d_%s.pkl' % (bool(self.with_option),bool(self.with_charging),bool(self.local_matching),str(self.train_step)))
             # record training process (stacked before)
             for item in self.record_list:
-                record_hist.writelines('{},{},{},{},{},{}\n'.format(item[0], item[1], item[2], item[3], item[4], item[5]))
+                record_hist.writelines('{},{},{}\n'.format(item[0], item[1], item[2]))
             print('Training step: {}, replay buffer size:{}, epsilon: {}, learning rate: {}'.format(self.record_list[-1][0],len(self.memory), self.decayed_epsilon,self.lr_scheduler.get_lr()))
             self.record_list = []
 

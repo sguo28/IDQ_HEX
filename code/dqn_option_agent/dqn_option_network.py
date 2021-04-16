@@ -11,7 +11,6 @@ class DQN_network(nn.Module):
     '''
     def __init__(self,input_dim,output_dim):
         """
-        todo: change SOC back to continuou value.
         :param input_dim:
         :param output_dim:
         """
