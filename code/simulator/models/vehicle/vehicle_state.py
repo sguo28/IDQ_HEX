@@ -1,6 +1,6 @@
 from novelties import status_codes
 from novelties import vehicle_types
-from config.hex_setting import TARGET_SOC, TARGET_SOC_STD
+from config.setting import TARGET_SOC, TARGET_SOC_STD
 import numpy as np
 
 
@@ -14,7 +14,7 @@ class VehicleState(object):
         'mile_of_range', 'target_SOC', 'SOC', 'agent_type', 'charging_threshold', 'hex_id', 'current_hex',
         'vehicle_id', 'dispatch_action_id', 'need_route','route', 'real_time_location', 'need_interpolate',
         'per_tick_dist', 'per_tick_coords','total_travel_distance','duration_by_status','require_dump_transition',
-        'destination_hex','origin_hex']
+        'destination_hex','origin_hex', 'converted_action_id']
 
     def __init__(self, id, location, hex_id, agent_type):
         """
@@ -51,6 +51,7 @@ class VehicleState(object):
         self.SOC = round(min(1, max(0, np.random.normal(TARGET_SOC, TARGET_SOC_STD))),4)  # SOC~N(90%,2%)
         self.charging_threshold = 0.2
         self.dispatch_action_id = 0
+        self.converted_action_id = 0
         self.need_route = False
         self.route = {}
         self.need_interpolate = False  ## this is the flag to say we need to interpolate the distance and coordinate of each vehicle

@@ -2,7 +2,7 @@
 
 import polyline
 from .async_requester import AsyncRequester
-from config.hex_setting import OSRM_HOSTPORT
+from config.setting import OSRM_HOSTPORT
 # from common import geoutils
 import numpy as np
 class OSRMEngine(object):

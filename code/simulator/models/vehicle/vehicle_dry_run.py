@@ -70,7 +70,7 @@ class Vehicle(object):
         self.charging_dicounted_reward = 0
 
         # update the information of vehicles, e.g. change the current hex zone location, this is not paralleled
-    def update_info(self, hex_zones, routes, hex_coords_list, tick):
+    def update_info(self, hex_zones, routes, hex_coords_list, tick,traj):
         # self.working_time += timestep
         if self.state.need_route:
             # print('OD hexes are:',self.state.hex_id,self.state.current_hex)
@@ -86,7 +86,9 @@ class Vehicle(object):
             self.state.need_route = False
             self.state.need_interpolate = True  # ask the remote to interpolate the coords
         if self.state.hex_id != self.state.current_hex:
+            traj.writelines('{},{},{}\n'.format(tick//(3600)%24,self.state.hex_id,self.state.current_hex))
             self.update_veh_hex(hex_zones, tick)
+
             # update each vehicle if the new location (current_hex) is different from its current one (hex_id)
 
     def update_veh_hex(self, hex_zones, tick):

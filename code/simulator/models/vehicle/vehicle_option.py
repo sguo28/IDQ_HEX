@@ -23,6 +23,7 @@ class Vehicle(object):
         status_codes.V_STAY: Stay(),
         status_codes.V_TOBECRUISED: Tobecruised()
     }
+
     def __init__(self, vehicle_state,with_option,local_matching,with_charging,tick):
         if not isinstance(vehicle_state, VehicleState):
             raise ValueError
@@ -45,7 +46,7 @@ class Vehicle(object):
         self.reward = 0
         self.recent_transitions = []  # deque(maxlen=10)
         self.f_func_transition = []
-        self.option_transition = []
+        self.option_trajectory = []
         self.flag = 0
         self.time_ticks = [0]
         self.start_tick = tick
@@ -68,9 +69,10 @@ class Vehicle(object):
         self.discount_factor = PER_TICK_DISCOUNT_FACTOR  # 0.99
         self.decay_lambda = 1.0
         self.charging_dicounted_reward = 0
+        self.terminate_flag = False
 
         # update the information of vehicles, e.g. change the current hex zone location, this is not paralleled
-    def update_info(self, hex_zones, routes, hex_coords_list, tick):
+    def update_info(self, hex_zones, routes, tick):
         # self.working_time += timestep
         if self.state.need_route:
             # print('OD hexes are:',self.state.hex_id,self.state.current_hex)
@@ -86,7 +88,12 @@ class Vehicle(object):
             self.state.need_route = False
             self.state.need_interpolate = True  # ask the remote to interpolate the coords
         if self.state.hex_id != self.state.current_hex:
+            # if self.state.status in [status_codes.V_CRUISING,status_codes.V_STAY]:
+            # f.writelines('{},{},{}\n'.format(tick//(3600)%24,self.state.hex_id,self.state.current_hex))
+            self.f_func_transition.append([self.state.hex_id,self.state.current_hex])
+
             self.update_veh_hex(hex_zones, tick)
+
             # update each vehicle if the new location (current_hex) is different from its current one (hex_id)
 
     def update_veh_hex(self, hex_zones, tick):
@@ -135,18 +142,17 @@ class Vehicle(object):
             exported_trans = self.recent_transitions[:-1]
             self.recent_transitions = [self.recent_transitions[-1]]
         return exported_trans
-    def dump_f_transitions(self):
-        exported_trans = []
-        if len(self.f_func_transition) > 1:
-            exported_trans = self.f_func_transition[:-1]
-            self.f_func_transition = [self.f_func_transition[-1]]
-        return exported_trans
-    def dump_option_transitions(self):
-        exported_trans = []
-        if len(self.option_transition) > 1:
-            exported_trans = self.option_transition[:-1]
-            self.option_transition = [self.option_transition[-1]]
-        return exported_trans
+
+    def dump_option_trajectories(self):
+        exported_traj = []
+        # if len(self.option_trajectory) > 1:
+        #     exported_traj = self.option_trajectory[:-1]
+        #     self.option_trajectory = [self.option_trajectory[-1]]
+        # return exported_traj
+        if len(self.option_trajectory) > 0:
+            exported_traj = self.option_trajectory
+            self.option_trajectory = []
+        return exported_traj
 
     def get_mile_of_range(self):
         return self.state.set_range()
@@ -157,9 +163,8 @@ class Vehicle(object):
     def get_target_SOC(self):
         return self.state.target_SOC
 
-    def send_to_dispatching_pool(self, action_id, converted_action_id):
+    def send_to_dispatching_pool(self, action_id):
         self.state.dispatch_action_id = action_id
-        self.state.converted_action_id = converted_action_id
         self.__change_to_tobedispatched()
 
     def location_interp(self, t_unit=60):
@@ -220,37 +225,26 @@ class Vehicle(object):
                 self.time_ticks = [t_unit for _ in range(K)]
                 self.state.per_tick_dist = [0 for _ in range(K)]
                 self.state.per_tick_coords = [[self.state.route[0][0][0], self.state.route[0][0][1]] for _ in range(K)]
-        #
-        # # case 2: stay or NO ROUTE IS AVAILABLE !
-        # else:
-        #     # we keep the vehicle to stay for a few ticks
-        #     '''
-        #     todo: make the K value a predefined parameter from the config file
-        #     '''
-        #     K = IDLE_DURATION
-        #     self.time_ticks = [t_unit for _ in range(K)]
-        #     self.state.per_tick_dist = [0 for _ in range(K)]
-        #     self.state.per_tick_coords = [[self.state.lon, self.state.lat] for _ in range(K)]
 
         assert len(self.state.per_tick_coords) == len(self.state.per_tick_dist)
         assert len(self.state.per_tick_dist) == len(self.time_ticks)
 
-    def cruise(self, target_hex_coord, action_id, tick,stay_flag):
+    def cruise(self, target_hex_coord, action, tick,stay_flag=False):
         '''
         :param target_hex_coord:
         :param tick: used by park to store states.
         '''
         assert self.__behavior.available
-
-        # only dump after one full transition is finished (and the new reward for matching is attached)
         # SOC follows exponential function:
+        self.option_trajectory += self.f_func_transition
+        self.f_func_transition = [] # reset to count the next cycle.
         self.reward = - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC) if self.state.SOC<=0.4 else 0
         self.decay_lambda = 1.0
         self.start_tick = tick
         self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
-        self.action = action_id
+        self.action = action
         self.__set_destination(target_hex_coord)
-        if stay_flag:
+        if action == 0:
             self.__change_to_stay()
         else:
             self.__change_to_cruising()
@@ -263,22 +257,20 @@ class Vehicle(object):
         self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
         if self.state.SOC < 0:
             self.reward -= self.decay_lambda*SOC_PENALTY
-        terminate=False
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,terminate, (self.end_tick - self.start_tick)//60])
+        self.terminate_flag = False
+        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
         self.__reset_plan()
         self.__change_to_idle()
 
-    def head_for_customer(self, destination, customer_hex_location):
+    def head_for_customer(self, destination, customer_origin_hex):
         '''
         :destination: lon, lat
         '''
         assert self.__behavior.available
         self.__set_destination(destination)
         self.state.origin_hex=self.state.hex_id
-        self.state.destination_hex=customer_hex_location
+        self.state.destination_hex=customer_origin_hex  # destination for pick-up
         self.state.need_route=True
-        self.state.assigned_customer_id = customer_hex_location
-        self.__customers_ids.append(customer_hex_location)
         self.__change_to_assigned()
 
     def dump_last(self,tick): #store the transaction and retrive terminal flag
@@ -287,31 +279,33 @@ class Vehicle(object):
             self.end_tick = tick
             self.end_state = [self.end_tick, self.state.hex_id, self.state.SOC]
             # update the reward
-            terminate = True
+            # terminate = True
             if self.start_tick==self.recent_transitions[-1][0][0]: # start tick in the REPLAY BUFFER
                 self.recent_transitions[-1] = [self.start_state, self.action, self.end_state, self.reward,
-                                                   terminate, (self.end_tick - self.start_tick) // 60]
+                                                   self.terminate_flag, (self.end_tick - self.start_tick) // 60]
             else: #not match
                 self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward,
-                                                   terminate, (self.end_tick - self.start_tick) // 60])
+                                                   self.terminate_flag, (self.end_tick - self.start_tick) // 60])
                 # elif self.start_state is not None :
                 #     self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
         exported_trans = self.recent_transitions
         return exported_trans
 
-
-
-    def head_for_charging_station(self, cs_id, cs_coord, tick, action_id):
+    def head_for_charging_station(self, cs_hex_id, cs_coord, tick, action_id):
         assert self.__behavior.available
+
+        self.option_trajectory += self.f_func_transition
+        self.f_func_transition = []
         self.reward = 0  # - BETA_RANGE_ANXIETY * self.compute_mileage_anxiety(self.state.SOC)
         self.decay_lambda = 1.0 # reset decaying lambda, updated per minute
         self.start_tick = tick
         self.start_state = [self.start_tick, self.state.hex_id, self.state.SOC]
+        self.state.origin_hex = self.state.hex_id
+        self.f_func_transition.append([self.state.origin_hex, cs_hex_id])
         self.action = action_id
-        # self.__reset_plan()
         self.__set_destination(cs_coord)
-        self.state.assigned_charging_station_id = cs_id
-        self.__charging_station.append(cs_id)
+        self.state.assigned_charging_station_id = cs_hex_id
+        self.__charging_station.append(cs_hex_id)
         self.__change_to_waytocharge()
 
     def take_rest(self, duration):
@@ -323,15 +317,14 @@ class Vehicle(object):
         # self.__log()
 
     def pickup(self):
-        # assert self.get_location() == self.customer.get_origin_lonlat()
+        self.f_func_transition.append([self.state.origin_hex, self.customer.get_destination()])
+
         self.state.destination_hex = self.customer.get_destination()
+        # from the hex getting matched to the hex dropping of customer.
         self.state.origin_hex=self.state.hex_id
         self.state.need_route=True
         self.customer.ride_on()
         self.__customers.append(self.customer)
-        customer_id = self.customer.get_id()
-        # self.__reset_plan() # For now we don't consider routes of occupied trip
-        self.state.assigned_customer_id = customer_id
         self.__set_destination(self.customer.get_destination_lonlat())
         self.__change_to_occupied()
         self.customer = None  # only take the id
@@ -358,18 +351,15 @@ class Vehicle(object):
         if self.state.SOC < 0:
             self.reward -= self.decay_lambda * SOC_PENALTY
         # update the reward
-        terminate_flag=False
+        self.terminate_flag=True
         if self.recent_transitions:
             #     # update the reward, add previous SOC penalty back to avoid double count on mileage anxiety.
             #     last_step_SOC = self.recent_transitions[-1][0][-1]
-            self.recent_transitions[-1] =[self.start_state, self.action, self.end_state, self.reward, terminate_flag,(self.end_tick - self.start_tick)//60]
-        # elif self.start_state is not None:
-        #     self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
+            self.recent_transitions[-1][4:6] =[self.reward, self.terminate_flag]
 
         self.state.current_capacity = 0
         self.__customers_ids = []
         self.__change_to_idle()
-        # self.__reset_plan()
         # self.__log()
 
     def start_waitpile(self, tick):
@@ -395,8 +385,8 @@ class Vehicle(object):
         cumulative_discounted_reward = self.decay_lambda * np.sum([self.discount_factor**(t+1) for t in range((self.end_tick-self.start_wait_tick)//60)])  # 60 is t_unit
         self.decay_lambda *= self.discount_factor**((self.end_tick-self.start_wait_tick)//60)  # update lambda, the last update was when it arrived at charging station
         self.reward += - BETA_TIME * 60*cumulative_discounted_reward - BETA_CHARGE_COST * unit_time_price * self.decay_lambda
-        terminate_flag=False
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, terminate_flag, self.reward, (self.end_tick - self.start_tick)//60])
+        self.terminate_flag=False
+        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.terminate_flag, self.reward, (self.end_tick - self.start_tick)//60])
         self.mileage_per_charge_cycle = 0
         self.__change_to_idle()
         self.__reset_plan()
@@ -412,8 +402,8 @@ class Vehicle(object):
         #  self.reward += - BETA_TIME * (self.end_tick - self.start_wait_tick) - self.decay_lambda* QUICK_END_CHARGE_PENALTY
         self.reward -= self.decay_lambda * QUICK_END_CHARGE_PENALTY
         self.decay_lambda *= self.discount_factor
-        terminate_flag=False
-        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, terminate_flag, (self.end_tick - self.start_tick)//60])
+        self.terminate_flag=False
+        self.recent_transitions.append([self.start_state, self.action, self.end_state, self.reward, self.terminate_flag, (self.end_tick - self.start_tick)//60])
         self.mileage_per_charge_cycle = 0
         self.__change_to_idle()
         self.__reset_plan()

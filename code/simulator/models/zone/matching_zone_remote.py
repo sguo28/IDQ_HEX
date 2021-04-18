@@ -1,7 +1,7 @@
 import numpy as np
 from novelties import status_codes
 from collections import defaultdict
-from config.hex_setting import REJECT_TIME, SEC_PER_MIN
+from config.setting import REJECT_TIME, SEC_PER_MIN
 import ray
 
 

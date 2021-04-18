@@ -12,7 +12,7 @@ from random import randrange
 import geopandas as gpd
 import time
 from scipy.spatial import KDTree
-from config.hex_setting import NUM_NEAREST_CS, charging_station_data_path, hex_route_file, STORE_TRANSITION_CYCLE, INPUT_DIM,NUM_REACHABLE_HEX,ENTERING_TIME_BUFFER, N_VEHICLES,N_DUMMY_VEHICLES,N_DQN_VEHICLES \
+from config.setting import NUM_NEAREST_CS, charging_station_data_path, hex_route_file, STORE_TRANSITION_CYCLE, INPUT_DIM,NUM_REACHABLE_HEX,ENTERING_TIME_BUFFER, N_VEHICLES,N_DUMMY_VEHICLES,N_DQN_VEHICLES \
     #FLAGS#,
 import pickle
 import ray

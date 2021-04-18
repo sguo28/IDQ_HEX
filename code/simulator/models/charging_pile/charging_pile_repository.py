@@ -1,5 +1,5 @@
 from .charging_pile import charging_station
-from config.hex_setting import charging_station_data_path
+from config.setting import charging_station_data_path
 
 
 class ChargingRepository():

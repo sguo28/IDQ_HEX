@@ -1,5 +1,5 @@
 from novelties import status_codes, customer_preferences, vehicle_types
-from config.hex_setting import SPEED, WAIT_COST,MILE_PER_METER, TOTAL_COST_PER_MILE, DRIVER_TIME_VALUE, \
+from config.setting import SPEED, WAIT_COST,MILE_PER_METER, TOTAL_COST_PER_MILE, DRIVER_TIME_VALUE, \
     SERVICE_PRICE_PER_MILE, SERVICE_PRICE_PER_MIN
 from random import randrange
 

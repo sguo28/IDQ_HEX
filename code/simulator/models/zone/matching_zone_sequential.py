@@ -1,6 +1,6 @@
 from novelties import status_codes
 from collections import defaultdict
-from config.hex_setting import REJECT_TIME, SEC_PER_MIN
+from config.setting import REJECT_TIME, SEC_PER_MIN
 
 
 class matching_zone(object):
@@ -134,12 +134,10 @@ class matching_zone(object):
         # print(
         #     'Current matching zone={}, Total matched passengers={}, Number of passengers={}, Number of drivers={}'.format(
         #         self.matching_zone_id, self.num_matches, len(passengers.keys()), len(vehicles.keys())))
-        matched=0
         if len(passengers.keys()) > 0 and len(vehicles.keys()) > 0:
             vehicles = {key: value for key, value in vehicles.items() if value.state.status in [status_codes.V_IDLE,status_codes.V_STAY, status_codes.V_CRUISING]}
             if len(vehicles.keys()) > 0:
-                matched=self.match_requests(vehicles, passengers)
-                self.num_matches +=matched
+                self.num_matches += self.match_requests(vehicles, passengers)
 
     ##### match requests to vehicles ######
     def match_requests(self, vehicles, passengers):
@@ -170,7 +168,6 @@ class matching_zone(object):
             # vehicle.state.current_hex = customer.get_origin()
             vehicle.head_for_customer(customer.get_origin_lonlat(),customer.get_origin())
 
-
         return len(assignments)  # record nums of getting matched
 
 
@@ -198,6 +195,4 @@ class matching_zone(object):
         num_long_wait_pass = sum([h.get_num_longwait_pass() for h in self.hex_zones])
         num_served_pass = sum([h.get_num_served_pass() for h in self.hex_zones])
         num_idle_vehs = len([veh for h in self.hex_zones for veh in h.vehicles.values() if veh.state.status == status_codes.V_IDLE])
-        num_assign_vehs = len([veh for h in self.hex_zones for veh in h.vehicles.values() if veh.state.status == status_codes.V_ASSIGNED])
-        total_vehs=len([veh for h in self.hex_zones for veh in h.vehicles.values()])
-        return [self.num_matches, num_arrivals, num_long_wait_pass, num_served_pass, num_idle_vehs,num_assign_vehs,total_vehs]
+        return [self.num_matches, num_arrivals, num_long_wait_pass, num_served_pass, num_idle_vehs]

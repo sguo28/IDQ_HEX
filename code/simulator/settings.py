@@ -1,6 +1,6 @@
 import os
 from novelties import status_codes
-from config.hex_setting import DEFAULT_LOG_DIR
+from config.setting import DEFAULT_LOG_DIR
 from tools.map import Map
 
 FLAGS = Map()

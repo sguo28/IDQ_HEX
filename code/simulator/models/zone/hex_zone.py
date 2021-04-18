@@ -1,5 +1,5 @@
 # from simulator.services.routing_service import RoutingEngine
-from config.hex_setting import OFF_DURATION, RELOCATION_DIM
+from config.setting import OFF_DURATION, RELOCATION_DIM
 from novelties import status_codes
 from simulator.models.customer.customer import Customer
 from simulator.models.customer.request import request
@@ -24,7 +24,6 @@ def local_seed(seed):
         np.random.set_state(state)  # put the state back on
 
 class hex_zone:
-
     def __init__(self, hex_id, coord,xy_coord, coord_list, match_zone, neighbors, charging_station_ids, charging_hexes,
                  charging_coords, od_split, trip_time, t_unit, epoch_length):
         """
@@ -63,6 +62,8 @@ class hex_zone:
         self.served_pass = 0
         self.longwait_pass = 0
         self.veh_waiting_time = 0
+        self.rands = []  # the set of random arrivals generated
+        self.served_id = []
         self.total_pass = 0  # this also servers as passenger id
 
         self.t_unit = t_unit  # number of ticks per hour
@@ -189,11 +190,12 @@ class hex_zone:
 
     def dispatch(self, vehicles, current_time):
         '''
-        todo: fulfill OFF_DUTY cycle: specify when to trigger OFF_Duty status 
+        todo: fulfill OFF_DUTY cycle: specify when to trigger OFF_Duty status
         :vehicles: is dict with key and values
         '''
         for vehicle in vehicles.values():
             action_id = vehicle.state.dispatch_action_id
+            converted_action_id = vehicle.state.converted_action_id
             offduty = 0  # actions are attached before implementing dispatch
             if offduty:
                 off_duration = np.random.randint(OFF_DURATION / 2, OFF_DURATION * 3 / 2)
@@ -201,37 +203,40 @@ class hex_zone:
                 vehicle.take_rest(off_duration)
             else:
                 # Get target destination and key to cache
-                target, charge_flag, target_hex_id, cid = self.convert_action_to_destination(vehicle, action_id)
+                target, charge_flag, target_hex_id, c_id,stay_flag = self.convert_action_to_destination(vehicle, converted_action_id)
                 vehicle.state.destination_hex = target_hex_id
                 vehicle.state.origin_hex = vehicle.state.hex_id
                 vehicle.state.need_route = True
                 if charge_flag == 0:
                     if isinstance(vehicle.state.current_hex, list): print('relo index wrong')
-                    vehicle.cruise(target, action_id, current_time)
+                    vehicle.cruise(target, action_id, current_time, stay_flag)
                     # print('Vehicle is cruising from {} to {}'.format(vehicle.state.hex_id, target_hex_id))
                 else:
                     if isinstance(vehicle.state.current_hex, list): print('charging index wrong')
-                    vehicle.head_for_charging_station(cid, target, current_time, action_id)
+                    vehicle.head_for_charging_station(c_id, target, current_time, action_id)
                     # print('The charing station ID for vehicle {} is {}'.format(vehicle.state.vehicle_id, cid))
 
-    def convert_action_to_destination(self, vehicle, action_id):
+    def convert_action_to_destination(self, vehicle, converted_action_id):
         '''
         vehicle: objects
         action_id: action ids from 0-11, pre-derived from DQN
         '''
         cid = None # charging_station_id
+        stay_flag = False
         valid_relocation_space = [vehicle.state.hex_id] + self.neighbor_hex_id
         try:
-            target_hex_id = valid_relocation_space[action_id]
+            target_hex_id = valid_relocation_space[converted_action_id]
             lon, lat = self.coord_list[target_hex_id]
             charge_flag = 0
+            if converted_action_id == 0:
+                stay_flag = True
         except IndexError:
-            cid = self.nearest_cs[action_id - RELOCATION_DIM]
+            cid = self.nearest_cs[converted_action_id - RELOCATION_DIM]
             target_hex_id = self.charging_hexes[cid]
-            lon, lat = self.charging_station_loc[self.nearest_cs[action_id - RELOCATION_DIM]]
+            lon, lat = self.charging_station_loc[self.nearest_cs[converted_action_id - RELOCATION_DIM]]
             charge_flag = 1
         target = (lon, lat)
-        return target, charge_flag, target_hex_id, cid
+        return target, charge_flag, target_hex_id, cid, stay_flag
 
     def get_num_arrivals(self):
         return self.narrivals

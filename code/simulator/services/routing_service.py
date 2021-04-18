@@ -1,6 +1,6 @@
 from simulator.services.osrm_engine import OSRMEngine
 from simulator.services.fastroute_engine import FastRoutingEngine
-from config.hex_setting import FLAGS
+from config.setting import FLAGS
 
 
 class RoutingEngine(object):

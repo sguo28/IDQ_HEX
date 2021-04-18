@@ -11,7 +11,7 @@ from config.hex_setting import NUM_REACHABLE_HEX, NUM_NEAREST_CS, ENTERING_TIME_
 from logger import sim_logger
 from novelties import agent_codes, status_codes
 from .models.charging_pile.charging_pile import charging_station
-from .models.vehicle.vehicle import Vehicle
+from .models.vehicle.vehicle_dry_run import Vehicle
 from .models.vehicle.vehicle_state import VehicleState
 from .models.zone.hex_zone import hex_zone
 from .models.zone.matching_zone_sequential import matching_zone
@@ -191,7 +191,7 @@ class Simulator(object):
         self.vehicle_queue = q
         print('initialize vehicle queue compelte')
 
-    def step(self):  # we use parallel update to call the step function.
+    def step(self,traj):  # we use parallel update to call the step function.
         '''
         1. conduct the matching for each matching zone
         2. Update passenger status
@@ -219,7 +219,7 @@ class Simulator(object):
         # print('update_pass', time.time() - t1)
 
         # t1 = time.time()
-        self.update_vehicles()  # push routes into vehicles
+        self.update_vehicles(traj)  # push routes into vehicles
         # print('update vehicle time:', time.time() - t1)
         self.enter_market()
 
@@ -261,7 +261,7 @@ class Simulator(object):
         # total_v=sum([item[6] for item in metrics])
         # print(self.num_match,self.total_num_arrivals,self.total_num_served_pass,self.total_idled_vehicles,total_assigned,total_v)
 
-    def update_vehicles(self):
+    def update_vehicles(self,traj):
         '''
         1. loop through all hexagones and update the vehicle status
         2. add veh to charging station
@@ -280,7 +280,7 @@ class Simulator(object):
             for hex_id, veh in zip(real_time_hex_id,vehs_to_update):
                 veh.state.current_hex = hex_id
 
-        [vehicle.update_info(self.hex_zone_collection, self.hex_routes, self.snapped_hex_coords_list, self.__t) for vehicle in vehs_to_update]
+        [vehicle.update_info(self.hex_zone_collection, self.hex_routes, self.snapped_hex_coords_list, self.__t,traj) for vehicle in vehs_to_update]
 
         [self.charging_station_collections[vehicle.get_assigned_cs_id()].add_arrival_veh(vehicle) \
          for vehicle in vehs_to_update if vehicle.state.status == status_codes.V_WAITPILE]

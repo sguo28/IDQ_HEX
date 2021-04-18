@@ -1,7 +1,7 @@
 from numpy.core.fromnumeric import mean
 from novelties import status_codes
 from collections import deque
-from config.hex_setting import CHARGE_ACCELERATOR, QUEUE_LENGTH_THRESHOLD, PER_TICK_DISCOUNT_FACTOR
+from config.setting import CHARGE_ACCELERATOR, QUEUE_LENGTH_THRESHOLD, PER_TICK_DISCOUNT_FACTOR
 
 
 class chargingpile:

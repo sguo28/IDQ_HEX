@@ -2,7 +2,7 @@ import polyline
 import os
 import pickle
 import numpy as np
-from config.hex_setting import DATA_DIR, MAX_MOVE
+from config.setting import DATA_DIR, MAX_MOVE
 from common import mesh, geoutils
 
 
