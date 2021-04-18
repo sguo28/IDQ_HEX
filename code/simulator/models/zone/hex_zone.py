@@ -1,5 +1,5 @@
 # from simulator.services.routing_service import RoutingEngine
-from config.setting import OFF_DURATION, RELOCATION_DIM
+from config.setting import OFF_DURATION, RELOCATION_DIM, OPTION_DIM
 from novelties import status_codes
 from simulator.models.customer.customer import Customer
 from simulator.models.customer.request import request
@@ -190,12 +190,12 @@ class hex_zone:
 
     def dispatch(self, vehicles, current_time):
         '''
-        todo: fulfill OFF_DUTY cycle: specify when to trigger OFF_Duty status
         :vehicles: is dict with key and values
         '''
         for vehicle in vehicles.values():
             action_id = vehicle.state.dispatch_action_id
             converted_action_id = vehicle.state.converted_action_id
+            vehicle.assigned_option = action_id  if action_id < 3 else -1
             offduty = 0  # actions are attached before implementing dispatch
             if offduty:
                 off_duration = np.random.randint(OFF_DURATION / 2, OFF_DURATION * 3 / 2)
@@ -231,6 +231,7 @@ class hex_zone:
             if converted_action_id == 0:
                 stay_flag = True
         except IndexError:
+            print('INVALID ACTION!!!!ACTION_ID IS {}'.format(converted_action_id))
             cid = self.nearest_cs[converted_action_id - RELOCATION_DIM]
             target_hex_id = self.charging_hexes[cid]
             lon, lat = self.charging_station_loc[self.nearest_cs[converted_action_id - RELOCATION_DIM]]

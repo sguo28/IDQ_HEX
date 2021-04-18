@@ -15,7 +15,6 @@ from .models.vehicle.vehicle_dry_run import Vehicle
 from .models.vehicle.vehicle_state import VehicleState
 from .models.zone.hex_zone import hex_zone
 from .models.zone.matching_zone_sequential import matching_zone
-import ijson
 
 class Simulator(object):
     def __init__(self, start_time, timestep, isoption=False,islocal=True,ischarging=True):
@@ -131,6 +130,7 @@ class Simulator(object):
         self.snapped_hex_coords_list = df[['snap_lon', 'snap_lat']].values.tolist()
         hex_to_match = df['cluster_la'].to_numpy()  # corresponded match zone id
         xy_coords = df[['col_id', 'row_id']].to_numpy()
+        self.xy_coords = xy_coords
         demand = self.process_trip(trip_file)
         travel_time = self.process_trip(travel_time_file)
 
@@ -288,12 +288,14 @@ class Simulator(object):
     def get_local_states(self):
         state_batches = []
         num_valid_relocations = []
+        on_option_flags = []  # if on option, the agent will continuouly get generated actions from the option DQN.
         for hex in self.hex_zone_collection.values():
             for vehicle in hex.vehicles.values():
                 if vehicle.state.agent_type == agent_codes.dqn_agent and vehicle.state.status == status_codes.V_IDLE:
                     state_batches.append(vehicle.dump_states(self.__t))  # (tick, hex_id, SOC)
                     num_valid_relocations.append(len([0] + self.hex_zone_collection[vehicle.get_hex_id()].neighbor_hex_id))
-        return state_batches, num_valid_relocations
+                    on_option_flags.append(vehicle.assigned_option)
+        return state_batches, num_valid_relocations, on_option_flags
 
     def get_local_infos(self):
         state_batches = []
@@ -436,7 +438,8 @@ class Simulator(object):
     def get_current_time(self):
         return self.__t
 
-    def summarize_metrics(self,demand_supply_gap_file, charging_od_file, cruising_od_file, matching_od_file):
+
+    def summarize_metrics(self,main_metrics,demand_supply_gap_file, charging_od_file, cruising_od_file, matching_od_file):
 
         all_vehicles = [vehicle for hex in self.hex_zone_collection.values() for vehicle in hex.vehicles.values() if
                         vehicle.state.agent_type == agent_codes.dqn_agent]
@@ -461,10 +464,22 @@ class Simulator(object):
         [cruising_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.repositioning_od_pairs]
         [matching_od_file.writelines('{},{},{}\n'.format(od[0], od[1], od[2])) for veh in all_vehicles for od in veh.matching_od_pairs]
         [veh.reset_od_pairs() for veh in all_vehicles]
-
-        return num_idle, num_serving, num_charging, num_cruising, n_matches, total_num_arrivals, \
-               total_removed_passengers, num_assigned, num_waitpile, num_tobedisptached, num_offduty, \
-               average_reduced_SOC, total_num_longwait_pass, total_num_served_pass, average_cumulated_earning
+        main_metrics.writelines(
+            '{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n'.format(self.__t, num_idle, num_serving,
+                                                                       num_charging,
+                                                                       num_cruising, num_assigned,
+                                                                       num_waitpile,
+                                                                       num_tobedisptached, num_offduty,
+                                                                       n_matches,
+                                                                       total_num_arrivals,
+                                                                       total_num_longwait_pass,
+                                                                       total_num_served_pass,
+                                                                       total_removed_passengers,
+                                                                       average_reduced_SOC,
+                                                                       average_cumulated_earning))
+        # return num_idle, num_serving, num_charging, num_cruising, n_matches, total_num_arrivals, \
+        #        total_removed_passengers, num_assigned, num_waitpile, num_tobedisptached, num_offduty, \
+        #        average_reduced_SOC, total_num_longwait_pass, total_num_served_pass, average_cumulated_earning
 
     def reset_storage(self):
         self.all_transitions = []

@@ -68,6 +68,7 @@ class Vehicle(object):
         self.discount_factor = PER_TICK_DISCOUNT_FACTOR  # 0.99
         self.decay_lambda = 1.0
         self.charging_dicounted_reward = 0
+        self.assigned_option = -1
 
         # update the information of vehicles, e.g. change the current hex zone location, this is not paralleled
     def update_info(self, hex_zones, routes, hex_coords_list, tick,traj):
@@ -579,7 +580,7 @@ class Vehicle(object):
         self.dropoff_distance = 0
         self.pickup_duration = 0
         self.dropoff_duration = 0
-    # def log_info(self,tick):
-    #     if self.state.id in [1,100,1000] and tick < 3000*60:
-    #         with open('logs/vehicle_track/vehicle_track_{}.log'.format(self.state.id), 'a') as f:
-    #             f.write('tick:{},Veh_ID:{},Coord:{},SOC:{},Mileage:{},Total Payment:{},Reward:{}\n'.format(tick//60,self.state.id,self.state.real_time_location, self.state.SOC,self.mileage_per_charge_cycle*self.state.mile_of_range, self.total_earnings,self.reward))
+    def log_info(self,tick):
+        if self.state.id in [1,100,1000] and tick < 3000*60:
+            with open('logs/vehicle_track/vehicle_track_{}.log'.format(self.state.id), 'a') as f:
+                f.write('tick:{},Veh_ID:{},Coord:{},SOC:{},Mileage:{},Total Payment:{},Reward:{}, Transition:{}\n'.format(tick//60,self.state.id,self.state.real_time_location, self.state.SOC,self.mileage_per_charge_cycle*self.state.mile_of_range, self.total_earnings,self.reward,self.recent_transitions))
