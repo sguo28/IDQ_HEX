@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import hexagdly
-from config.setting import NUM_REACHABLE_HEX, LEVEL_OF_SOC
+from config.hex_setting import NUM_REACHABLE_HEX, LEVEL_OF_SOC
+
 class OptionNetwork(nn.Module):
     '''
     Full connected layer with Relu
@@ -21,7 +22,7 @@ class OptionNetwork(nn.Module):
         self.hexconv_1 = hexagdly.Conv2d(in_channels=4, out_channels=16, kernel_size=5, stride=3, bias=True)
         # self.hexpool = hexagdly.MaxPool2d(kernel_size=1, stride=2)
         self.hexconv_2 = hexagdly.Conv2d(16, 64, 3, 3)  # 1, 16, 15, 18
-        self.global_fc = nn.Sequential((nn.Linear(64*5*6, 256)))  # ,nn.Dropout(0.5)
+        self.global_fc = nn.Sequential((nn.Linear(64*6*6, 256)))  # ,nn.Dropout(0.5)
         ## local state
         self.local_fc = nn.Linear(input_dim,256)
         self.fc_adv = nn.Linear(256,64)
@@ -30,7 +31,7 @@ class OptionNetwork(nn.Module):
         self.output_v = nn.Linear(64,1)
 
         ## concat_fc
-        self.cat_fc = nn.Linear(64*5*6+3,256)
+        self.cat_fc = nn.Linear(64*6*6+3,256)
 
     def forward(self,local_state, global_state):
         ## global state
@@ -68,7 +69,7 @@ class TargetOptionNetwork(nn.Module):
         self.hexconv_1 = hexagdly.Conv2d(in_channels=4, out_channels=16, kernel_size=5, stride=3, bias=True)
         # self.hexpool = hexagdly.MaxPool2d(kernel_size=1, stride=2)
         self.hexconv_2 = hexagdly.Conv2d(16, 64, 3, 3)  # 1, 16, 15, 18
-        self.global_fc = nn.Sequential((nn.Linear(64 * 5 * 6, 256)))  # ,nn.Dropout(0.5)
+        self.global_fc = nn.Sequential((nn.Linear(64 * 6 * 6, 256)))  # ,nn.Dropout(0.5)
         ## local state
         self.local_fc = nn.Linear(input_dim, 256)
         self.fc_adv = nn.Linear(256, 64)
@@ -77,7 +78,7 @@ class TargetOptionNetwork(nn.Module):
         self.output_v = nn.Linear(64, 1)
 
         ## concat_fc
-        self.cat_fc = nn.Linear(64 * 5 * 6 + 3, 256)
+        self.cat_fc = nn.Linear(64 * 6 * 6 + 3, 256)
 
     def forward(self, local_state, global_state):
         ## global state

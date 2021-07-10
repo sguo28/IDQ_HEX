@@ -2,10 +2,11 @@ import os
 import random
 from collections import OrderedDict,defaultdict
 import numpy as np
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from config.setting import LEARNING_RATE, GAMMA, REPLAY_BUFFER_SIZE, BATCH_SIZE, RELOCATION_DIM, CHARGING_DIM, \
+from config.hex_setting import LEARNING_RATE, GAMMA, REPLAY_BUFFER_SIZE, BATCH_SIZE, RELOCATION_DIM, CHARGING_DIM, \
     INPUT_DIM, OPTION_DIM, FINAL_EPSILON, HIGH_SOC_THRESHOLD, LOW_SOC_THRESHOLD, CLIPPING_VALUE, START_EPSILON, \
     EPSILON_DECAY_STEPS, SAVING_CYCLE, STORE_TRANSITION_CYCLE, NUM_REACHABLE_HEX, OPTION_DQN_SAVE_PATH, \
     DQN_OUTPUT_DIM, H_AGENT_SAVE_PATH, TERMINAL_STATE_SAVE_PATH
@@ -23,7 +24,7 @@ class DeepQNetworkOptionAgent:
         self.start_epsilon = START_EPSILON
         self.final_epsilon = FINAL_EPSILON
         self.epsilon_steps = EPSILON_DECAY_STEPS
-        self.memory = BatchReplayMemory(256)
+        self.memory = BatchReplayMemory(REPLAY_BUFFER_SIZE)
         self.batch_size = BATCH_SIZE
         self.clipping_value = CLIPPING_VALUE
         self.input_dim = INPUT_DIM  # 3 input state
@@ -92,14 +93,17 @@ class DeepQNetworkOptionAgent:
         :param oid: ID for option network
         :return:
         """
-        middle_terminal = defaultdict(list)
+        middle_terminal = dict()
         for oid in range(self.num_option):
             with open(TERMINAL_STATE_SAVE_PATH+'term_states_%d.csv'%oid,'r') as ts:
                 next(ts)
                 for lines in ts:
                     line = lines.strip().split(',')
                     hr, hid = line  # option_network_id, hour, hex_ids in terminal state
-                    middle_terminal[(oid,int(hr))].append(hid)
+                    if (oid,int(hr)) in middle_terminal.keys():
+                        middle_terminal[(oid,int(hr))].append(int(hid))
+                    else:
+                        middle_terminal[(oid, int(hr))]=[int(hid)]
         return middle_terminal
 
     def get_actions(self, states, num_valid_relos, assigned_option_ids, global_state):
@@ -112,49 +116,56 @@ class DeepQNetworkOptionAgent:
         :return: action ids ranges from (0,14) , converted action ids has converted the option ids to hte action ids that are selected by corresponding option networks
         """
         with torch.no_grad():
+            t1=time.time()
             self.decayed_epsilon = max(self.final_epsilon, (self.start_epsilon - self.train_step * (
                     self.start_epsilon - self.final_epsilon) / self.epsilon_steps))
 
             state_reps = np.array([self.state_feature_constructor.construct_state_features(state) for state in states])
             hex_diffusions = np.array(
                 [np.tile(self.hex_diffusion[state[1]], (1, 1, 1)) for state in states])  # state[1] is hex_id
-            full_action_values = self.q_network.forward(
-                torch.from_numpy(state_reps).to(dtype=torch.float32, device=self.device),
-                torch.from_numpy(
-                    np.concatenate([np.tile(global_state, (len(states), 1, 1, 1)), hex_diffusions], axis=1)).to(
-                    dtype=torch.float32, device=self.device))
+
             mask = self.get_action_mask(states, num_valid_relos)  # mask for unreachable primitive actions
-
-            option_mask = self.get_option_mask(states,assigned_option_ids) # if the state is considered as terminal, we dont use it..
-            terminate_option_mask = torch.from_numpy(option_mask).to(dtype=torch.bool, device=self.device)
-
+            option_mask = self.get_option_mask(states) # if the state is considered as terminal, we dont use it..
+            # print('prepare data time:', time.time()-t1)
             if random.random() > self.decayed_epsilon:  # epsilon = 0.1
                 # print('take a look at processed mask {}'.format(mask))
-
-                for row_id, option_id in enumerate(assigned_option_ids):
-                    if option_id != -1:
-                        full_action_values[row_id, option_id] = 9e10
-                full_action_values[terminate_option_mask] = -9e10
-                full_action_values[mask] = -9e10
-                action_indexes = torch.argmax(full_action_values, dim=1).tolist()
+                full_action_values = self.q_network.forward(
+                    torch.from_numpy(state_reps).to(dtype=torch.float32, device=self.device),
+                    torch.from_numpy(
+                        np.concatenate([np.tile(global_state, (len(states), 1, 1, 1)), hex_diffusions], axis=1)).to(
+                        dtype=torch.float32, device=self.device))
+                assigned_option_ids=np.array(assigned_option_ids,dtype=int)
+                #choose an action, in the following conditions:
+                #1. if it is a terminal state, select the one with the maximum Q value
+                #2  if it is not a terminal state, following the previous option policy to get the action (must)
+                # ---- if there is no previous options, randomly select a policy with the largest value
+                update_idx=assigned_option_ids>-1 #those states who are under options
+                full_action_values[np.arange(full_action_values.shape[0])[update_idx],assigned_option_ids[update_idx]]=9e10 #set the chosen policy to be very high value (must select)
+                # for row_id, option_id in enumerate(assigned_option_ids):
+                #     if option_id != -1:
+                #         full_action_values[row_id, option_id] = 9e10
+                terminate_option_mask = torch.from_numpy(option_mask).to(dtype=torch.bool, device=self.device)
+                full_action_values[terminate_option_mask] = -9e10 #if the chosen policy is in a terminal state, mask it out
+                full_action_values[mask] = -9e10 #choose other actions
+                action_indexes = torch.argmax(full_action_values, dim=1).cpu().numpy() #this returns which action was taken (all options + actions)
                 # convert option to target hex_id
             else:
                 full_action_values = np.random.random(
                     (len(states), self.output_dim))  # generate a matrix with values from 0 to 1
-                for i, state in enumerate(states):
-                    if assigned_option_ids[i] != -1:
-                        full_action_values[i][assigned_option_ids[i]] = 10 # a large enough number to maintain that option if it's terminal state, we next mask it with -1.
-                    full_action_values[i][:self.option_dim] = np.negative(option_mask[i,:self.option_dim]) # convert terminal agents to -1
-                    full_action_values[i][(self.option_dim+num_valid_relos[i]):(self.option_dim+self.relocation_dim)] = -1 # mask unreachable neighbors.
-                    if state[-1] > HIGH_SOC_THRESHOLD:
-                        full_action_values[i][(self.option_dim+self.relocation_dim):] = -1  # no charging, must relocate
-                    elif state[-1] < LOW_SOC_THRESHOLD:
-                        full_action_values[i][:(self.option_dim+self.relocation_dim)] = -1  # no relocation, must charge
-                action_indexes = np.argmax(full_action_values, 1).tolist()
+
+                assigned_option_ids=np.array(assigned_option_ids,dtype=int)
+                update_idx=assigned_option_ids>-1
+                full_action_values[np.arange(full_action_values.shape[0])[update_idx],assigned_option_ids[update_idx]]=9e10 #must choose
+                full_action_values[option_mask] = -9e10 #if the chosen policy is in a terminal state, mask it out
+                full_action_values[mask.cpu().numpy()] = -9e10 #choose other actions
+                action_indexes = np.argmax(full_action_values, 1)
             # after getting all action ids by DQN, we convert the ones triggered options to the primitive action ids.
-            converted_action_indexes = self.convert_option_to_primitive_action_id(action_indexes,state_reps,global_state,hex_diffusions,mask)
+            tt=time.time()
+            #if using options, use DQN to take a primitive action. Otherwise, choose a primitive action, and correct the corresponding index
+            converted_action_indexes,assigned_opts = self.convert_option_to_primitive_action_id(action_indexes,state_reps,global_state,hex_diffusions,mask)
+            # print('Conversion time:',time.time()-tt)
         # if mask the assigned option at last, the terminal state will not be counted.
-        return np.array(action_indexes), np.array(converted_action_indexes)-self.option_dim
+        return converted_action_indexes-self.option_dim, assigned_opts
 
     def convert_option_to_primitive_action_id(self,action_indexes,state_reps,global_state,hex_diffusions,mask):
         """
@@ -166,6 +177,21 @@ class DeepQNetworkOptionAgent:
         :param mask:
         :return:
         """
+        assigned_options=-np.ones(len(action_indexes))
+        # for id, action in enumerate(action_indexes):
+        #     if action<self.num_option: #an option is choosen
+        #         assigned_options[id]=action #this action now because the option network
+        #         tmp_state=state_reps[id]
+        #         full_option_values = self.h_network_list[action].forward(
+        #             torch.from_numpy(tmp_state).to(dtype=torch.float32, device=self.device),
+        #             torch.from_numpy(np.concatenate(
+        #                 [np.tile(global_state, (len(tmp_state), 1, 1, 1)), hex_diffusions[tmp_state[1]]],
+        #                 axis=1)).to(dtype=torch.float32, device=self.device))
+        #         print('Getting action from h network!')
+        #         full_option_values[mask[id,:]]=-9e10 #mask out invalid actions
+        #         action_indexes[id]=torch.argmax(full_option_values,dim=1)
+        #
+
         ids_require_option= defaultdict(list)
         for id, action_id in enumerate(action_indexes):
             if action_id < self.num_option:
@@ -177,13 +203,15 @@ class DeepQNetworkOptionAgent:
                     torch.from_numpy(np.concatenate(
                         [np.tile(global_state, (len(ids_require_option[option_id]), 1, 1, 1)), hex_diffusions[ids_require_option[option_id]]],
                         axis=1)).to(dtype=torch.float32, device=self.device))
+                print('Getting action from h network!',option_id)
                 # here mask is of batch x 15 dimension, we omit the first 3 columns, which should be options.
                 primitive_action_mask = mask[ids_require_option[option_id],self.option_dim:]  # only primitive actions in option generator
                 full_option_values[primitive_action_mask] = -9e10
-                option_generated_premitive_action_ids = torch.argmax(full_option_values, dim=1).tolist()  # let option network select primitive action
+                option_generated_premitive_action_ids = torch.argmax(full_option_values, dim=1).cpu().numpy()  # let option network select primitive action
                 action_indexes[ids_require_option[option_id]] = option_generated_premitive_action_ids+self.option_dim # 12 to 15
+                assigned_options[ids_require_option[option_id]]=option_id
                 # cover the option id with the generated primitive action id
-        return action_indexes
+        return action_indexes,assigned_options
 
     def add_global_state_dict(self, global_state_list):
         for tick in global_state_list.keys():
@@ -249,6 +277,8 @@ class DeepQNetworkOptionAgent:
         state_batch = torch.from_numpy(np.array(state_reps)).to(dtype=torch.float32, device=self.device)
         action_batch = torch.from_numpy(np.array(batch.action)).unsqueeze(1).to(dtype=torch.int64, device=self.device)
         reward_batch = torch.from_numpy(np.array(batch.reward)).unsqueeze(1).to(dtype=torch.float32, device=self.device)
+        terminal_flag = 1 - torch.from_numpy(np.array(batch.terminate_flag)).unsqueeze(1).to(dtype=torch.int64,
+                                                                                             device=self.device)
         time_step_batch = torch.from_numpy(np.array(batch.time_steps)).unsqueeze(1).to(dtype=torch.float32, device=self.device)
 
         next_state_batch = torch.from_numpy(np.array(next_state_reps)).to(device=self.device, dtype=torch.float32)
@@ -259,12 +289,15 @@ class DeepQNetworkOptionAgent:
         q_state_action = self.get_main_Q(state_batch, global_state_batch).gather(1, action_batch.long())
         # add a mask
         all_q_ = self.get_target_Q(next_state_batch, global_next_state_batch)
+        t1=time.time()
         option_mask = self.get_option_mask(batch.next_state)
+
         mask_ = self.get_action_mask(batch.next_state, batch.valid_action_num)  # action mask for next state
         all_q_[option_mask] = -9e10
         all_q_[mask_] = -9e10
         maxq = all_q_.max(1)[0].detach().unsqueeze(1)
-        y = reward_batch + maxq*torch.pow(self.gamma,time_step_batch)
+        print('Max Q={}, Max target Q={},Gamma={}'.format(torch.max(q_state_action), torch.max(maxq), self.gamma))
+        y = reward_batch + terminal_flag*maxq*torch.pow(self.gamma,time_step_batch)
         loss = F.smooth_l1_loss(q_state_action, y)
         self.optimizer.zero_grad()
         loss.backward()
@@ -283,7 +316,7 @@ class DeepQNetworkOptionAgent:
         :param batch_valid_action: info that limites to relocate to reachable neighboring hexes
         :return:
         """
-        mask = np.zeros((len(batch_state), self.output_dim))  # (num_state, 15)
+        mask = np.zeros((len(batch_state), self.output_dim),dtype=bool)  # (num_state, 15)
         for i, state in enumerate(batch_state):
             mask[i][(self.option_dim+ batch_valid_action[i]):(self.option_dim+self.relocation_dim)] = 1  # limited to relocate to reachable neighboring hexes
             if state[-1] > HIGH_SOC_THRESHOLD:
@@ -300,11 +333,12 @@ class DeepQNetworkOptionAgent:
         :param states:
         :return:
         """
-        terminate_option_mask = np.zeros((len(states),self.output_dim))
-        for oid in range(self.num_option):
-            terminate_option_mask[:,oid] = self.is_terminal(states,oid)  # set as 0 if not in terminal set
-        for oid in range(self.num_option,self.option_dim):
-            terminate_option_mask[:,oid] = 1 # mask out empty options
+        terminate_option_mask = np.zeros((len(states),self.output_dim),dtype=bool)
+        t1=time.time()
+        for option in range(self.num_option):
+            terminate_option_mask[:,option] = self.is_terminal(states,option)  # set as 0 if not in terminal set
+        # for oid in range(self.num_option,self.option_dim):
+        #     terminate_option_mask[:,oid] = 1 # mask out empty options
         return terminate_option_mask
 
     def is_terminal(self,states,oid):
@@ -313,7 +347,7 @@ class DeepQNetworkOptionAgent:
         :param states:
         :return: a list of bool
         """
-        return [1 if state in self.middle_terminal[(oid,int(state[0] // (60 * 60) % 24))] else 0 for state in states]
+        return [1 if state[1] in self.middle_terminal[(oid,int(state[0] // (60 * 60) % 24))] else 0 for state in states]
 
     def is_initial(self,states,oid):
         """
@@ -321,7 +355,7 @@ class DeepQNetworkOptionAgent:
         :param states:
         :return: a list of bool
         """
-        return [1 if state not in self.middle_terminal[(oid,int(state[0] // (60 * 60) % 24))] else 0 for state in states]
+        return [1 if state[1] not in self.middle_terminal[(oid,int(state[0] // (60 * 60) % 24))] else 0 for state in states]
 
 
     def save_parameter(self, record_hist):

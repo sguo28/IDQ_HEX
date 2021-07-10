@@ -1,5 +1,5 @@
 import numpy as np
-from config.setting import NUM_REACHABLE_HEX
+from config.hex_setting import NUM_REACHABLE_HEX
 class FeatureConstructor:
     """
     transform tick, SOC, hex_id to representative format
