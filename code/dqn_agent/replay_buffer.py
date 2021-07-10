@@ -48,6 +48,34 @@ class Prime_ReplayMemory(object):
     def __len__(self):
         return len(self.memory)
 
+class F_ReplayMemory(object):
+
+    def __init__(self, capacity):
+        self.Transition = namedtuple('Transition',
+                                     ('state', 'next_state'))
+        self.capacity = capacity
+        self.memory = []
+        self.position = 0
+
+    def push(self, *args):
+        """Saves a transition."""
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)
+        self.memory[self.position] = self.Transition(*args)
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size):
+        # return self.memory
+        return random.sample(self.memory, batch_size)
+
+    def reset(self):
+        self.memory = []
+        self.position = 0
+
+    def __len__(self):
+        return len(self.memory)
+
+
 
 # class PrioritizedMemory:   # stored as ( s, a, r, s_ , t)
 #     """

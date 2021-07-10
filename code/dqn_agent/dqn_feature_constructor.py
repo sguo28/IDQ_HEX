@@ -30,9 +30,30 @@ class FeatureConstructor:
         soc_level = soc #np.digitize(soc,[0,0.1,0.2,0.25,0.3,0.4,0.5,0.65,0.8,1.0]) # level = 0 only means SOC<0 (never >1)
         #  [0.8-1, 0.65-0.8, 0.5-0.65, 0.4-0.5, 0.3-0.4, 0.25-0.3, 0.2-0.25])
         state_features += [hex_id]
-        state_features += [soc_level]
+        state_features += [1] #[soc_level]
         state_features += time_features
         return state_features
+
+    def construct_f_features(self,state):
+        """
+        To construct state features:
+        time feature: sin and cos: time of day  # deleted --day of week--
+        soc: discretized soc to 10 levels
+        hex_id: hold for one-hot encoding inside DQN network
+        :param state:
+        :return:
+        """
+        tick, hex_id, soc = state
+        state_features = []
+        time_features = [(tick//3600)%24,0]
+        # hex_one_hot = self.construct_one_hot_encoding_map(hex_id)
+        soc_level = soc #np.digitize(soc,[0,0.1,0.2,0.25,0.3,0.4,0.5,0.65,0.8,1.0]) # level = 0 only means SOC<0 (never >1)
+        #  [0.8-1, 0.65-0.8, 0.5-0.65, 0.4-0.5, 0.3-0.4, 0.25-0.3, 0.2-0.25])
+        state_features += [hex_id]
+        state_features += [0] #[soc_level]
+        state_features += time_features
+        return state_features
+
 
     def construct_map_vector(self, hex_id):
         """
@@ -60,6 +81,8 @@ class FeatureConstructor:
     #     # return d.transpose()xianzai
 
     def construct_time_features(self, tick):
-        hourofday = tick % (60 * 60 * 24) / 24.0 * 2 * np.pi
+        # hourofday = tick % (60 * 60 * 24) / 24.0 * 2 * np.pi
+
+        time_feature=2*np.pi*tick/(24*60*60)
         # dayofweek = tick % (60 * 60 * 24 * 7) / 7.0 * 2 * np.pi
-        return [np.sin(hourofday), np.cos(hourofday)]  #, np.sin(dayofweek), np.cos(dayofweek)]
+        return [np.sin(time_feature), np.cos(time_feature)]  #, np.sin(dayofweek), np.cos(dayofweek)]
