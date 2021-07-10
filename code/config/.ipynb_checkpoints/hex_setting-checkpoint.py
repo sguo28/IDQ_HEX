@@ -43,9 +43,9 @@ QUICK_END_CHARGE_PENALTY = 50  # equivalent to weighted summation of 200 min sta
 
 
 ### config for training DQN with CNN
-LEARNING_RATE = 0.00014934# 1e-4
+LEARNING_RATE = 0.00015# 1e-4
 
-REPLAY_BUFFER_SIZE = int(1e6)
+REPLAY_BUFFER_SIZE = int(2*1e6)
 BATCH_SIZE = 512
 FINAL_EPSILON = 0.05
 START_EPSILON = 1.0
@@ -53,8 +53,8 @@ EPSILON_DECAY_STEPS =  int(2e5)# 250*1440 #2e5
 CLIPPING_VALUE = 1.0
 RELOCATION_DIM = 7
 CHARGING_DIM = 5
-OPTION_DIM = 1
-CUDA=1
+OPTION_DIM =0
+CUDA=0
 INPUT_DIM = 2 + 1
 OUTPUT_DIM = RELOCATION_DIM + CHARGING_DIM
 DQN_OUTPUT_DIM = RELOCATION_DIM + CHARGING_DIM + OPTION_DIM
@@ -68,7 +68,7 @@ HRL_OUTPUT_DIM = HRL_RELOCATION_DIM + HRL_CHARGING_DIM
 
 STORE_TRANSITION_CYCLE = 60 * 50  # dump transitions to DQN every 5 min
 TRAINING_CYCLE = 1 * 60  # min
-UPDATE_CYCLE = 100 * 60  # update per 1000 tick
+UPDATE_CYCLE = 500 * 60  # update per 1000 tick
 SAVING_CYCLE = 60 * 24 * 3 # save per day
 DQN_RESUME = False
 CNN_RESUME = False
@@ -102,7 +102,7 @@ TARGET_SOC = 0.90
 TARGET_SOC_STD = 0.02
 
 #### PARAMETER FOR REWARD CALCULATION
-BETA_EARNING = 3
+BETA_EARNING = 10
 BETA_CHARGE_COST = 1
 BETA_RANGE_ANXIETY = 0
 SOC_PENALTY = 100
@@ -119,7 +119,7 @@ REJECT_TIME = 30 * 60  # 30 min
 START_OFFSET = int(0)  # simulation start datetime offset (days)"
 SIM_DAYS = int(1)  # simulation days: 504000 ticks
 START_TIME = int(0)  # int(1464753600)  #  + 3600 * 5simulation start datetime (unixtime)")
-N_EPISODE=int(250*1440) # number of episode
+N_EPISODE=1000 # number of episode
 
 #### Speed up the simulation
 SIM_ACCELERATOR = float(1)  # accelerate consumption speed
